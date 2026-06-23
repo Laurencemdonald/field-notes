@@ -26,10 +26,17 @@
   .brand h1{font-family:var(--serif);font-weight:500;font-size:30px;letter-spacing:.01em;margin:0;line-height:1;color:var(--ink);}
   .brand .subtitle{font-family:var(--sans);font-size:12px;font-weight:400;text-transform:lowercase;letter-spacing:.08em;color:var(--gray);margin-top:8px;}
 
-  .dropzone{border:1px solid var(--line);padding:56px 40px;text-align:center;margin-bottom:64px;cursor:pointer;transition:border-color .2s ease,background .2s ease;}
+  .dropzone{position:relative;border:1px solid var(--line);padding:56px 40px;text-align:center;margin-bottom:64px;cursor:pointer;transition:border-color .2s ease,background .2s ease;overflow:hidden;}
   .dropzone.drag{border-color:var(--ink);background:#FAFAFA;}
+  .dropzone.busy{border-color:var(--ink);cursor:default;}
   .dropzone .dz-label{font-family:var(--sans);font-size:12px;text-transform:lowercase;letter-spacing:.06em;color:var(--gray);}
+  .dropzone.busy .dz-label{color:var(--ink);}
   .dropzone .dz-rule{width:64px;height:1px;background:var(--line);margin:18px auto 0;}
+  .dropzone.busy .dz-rule{display:none;}
+  .dz-stop{display:none;font-family:var(--sans);font-size:11px;text-transform:lowercase;letter-spacing:.06em;color:var(--gray);margin:16px auto 0;cursor:pointer;border-bottom:1px solid var(--line);width:fit-content;padding-bottom:2px;}
+  .dz-stop:hover{color:var(--ink);border-bottom-color:var(--ink);}
+  .dropzone.busy .dz-stop{display:block;}
+  .dz-progress{position:absolute;left:0;bottom:0;height:2px;width:0;background:var(--ink);transition:width .35s ease;pointer-events:none;}
 
   .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:30px;}
   .card{border:1px solid var(--line);background:var(--bg);cursor:pointer;display:flex;flex-direction:column;overflow:hidden;animation:fadein .5s ease both;}
@@ -167,8 +174,10 @@
   </header>
 
   <div class="dropzone" id="dropzone">
-    <div class="dz-label">drop your references here</div>
+    <div class="dz-label" id="dzLabel">drop your references here</div>
     <div class="dz-rule"></div>
+    <div class="dz-stop" id="dzStop">stop importing</div>
+    <div class="dz-progress" id="dzProgress"></div>
   </div>
 
   <div class="searchbar" id="searchbar">
@@ -229,6 +238,14 @@ const fileInput = document.getElementById("fileInput");
 
 let items = [];        // in-memory mirror of the library
 const pending = {};    // id -> original dataURL, kept only until save succeeds (for retry)
+
+// Batch import: drain a queue through a small worker pool so a big folder drop
+// stays fast without spawning one analysis per photo all at once.
+const INGEST_CONCURRENCY = 4;        // photos analysed in parallel
+let ingestQueue = [];                // placeholder items waiting their turn
+let ingestRunning = 0;               // active workers
+let ingestStop = false;              // set by the "stop importing" control
+let ingestStats = { total:0, done:0, failed:0 };
 let dragIds = [];      // card ids currently being dragged onto a trip
 let draggingCards = false;
 
@@ -591,33 +608,104 @@ function friendlyErr(err){
     return "image analysis isn't set up yet — install claude code, or add an api key (see the readme)";
   return m ? m.toLowerCase().slice(0,100) : "couldn't read this one";
 }
-async function ingest(files){
-  const list = Array.from(files).filter(f => /^image\//.test(f.type) || /\.(jpe?g|png|webp|heic|heif)$/i.test(f.name));
-  for(const file of list){
-    const id = "fn_" + Date.now() + "_" + Math.random().toString(36).slice(2,8);
-    const item = { id, file:null, dataURL:"", filename:file.name, status:"looking", name:"", description:"", category:"", mood:"", colors:[], materials:[] };
-    items.unshift(item); render();
-    try{
-      const original = await blobToDataURL(file);   // raw original bytes, any format
-      // Safari (macOS) can render HEIC natively, so show it immediately while we work
-      item.dataURL = original; refreshCard(id);
-      pending[id] = original;
-      const rec = await apiAdd(id, original, file.name);  // convert + downscale + analyze + save
-      if(rec && rec.duplicate){                     // already in the library (or a double-drop) — drop this card
-        const i = items.indexOf(item); if(i>=0) items.splice(i,1);
-        delete pending[id]; render();
-        continue;
-      }
-      Object.assign(item, rec);
-      item.dataURL = "";                            // disk serves the converted original now
-      delete pending[id];
-      item.status = "ready";
-    }catch(err){
-      item.status = "error";
-      item.error = friendlyErr(err);
-    }
-    render();
+function isImageFile(f){ return /^image\//.test(f.type) || /\.(jpe?g|png|webp|heic|heif)$/i.test(f.name); }
+
+// Queue the dropped files and run them through the worker pool. Safe to call
+// again mid-import — new files just join the queue.
+function ingest(files){
+  const list = Array.from(files).filter(isImageFile);
+  if(!list.length) return;
+  if(ingestRunning === 0){ ingestStats = { total:0, done:0, failed:0 }; ingestStop = false; }  // fresh session
+  // create all placeholders up front (in dropped order) and lay them out once
+  const fresh = list.map(file => ({
+    id:"fn_" + Date.now() + "_" + Math.random().toString(36).slice(2,8),
+    file:null, dataURL:"", filename:file.name, status:"looking",
+    name:"", description:"", category:"", mood:"", colors:[], materials:[], _blob:file
+  }));
+  items.unshift(...fresh);
+  render();
+  ingestStats.total += fresh.length;
+  ingestQueue.push(...fresh);
+  showIngestProgress();
+  pumpWorkers();
+}
+function pumpWorkers(){
+  while(ingestRunning < INGEST_CONCURRENCY && ingestQueue.length && !ingestStop){
+    ingestRunning++;
+    runWorker();
   }
+}
+async function runWorker(){
+  try{
+    while(!ingestStop && ingestQueue.length){
+      await processOne(ingestQueue.shift());
+      showIngestProgress();
+    }
+  } finally {
+    ingestRunning--;
+    if(ingestRunning === 0) endIngest();
+  }
+}
+// Read, upload, analyze and save one photo; update just its card (not the whole grid).
+async function processOne(item){
+  const id = item.id;
+  try{
+    const original = await blobToDataURL(item._blob); item._blob = null;  // raw bytes, any format
+    item.dataURL = original; refreshCard(id);     // Safari renders HEIC natively — show it while we work
+    pending[id] = original;
+    const rec = await apiAdd(id, original, item.filename);   // convert + downscale + analyze + save
+    if(rec && rec.duplicate){                     // already in the library (or a double-drop) — drop this card
+      const i = items.indexOf(item); if(i>=0) items.splice(i,1);
+      delete pending[id];
+      const old = grid.querySelector('.card[data-id="'+id+'"]'); if(old) old.remove();
+      ingestStats.done++; scheduleFacets();
+      return;
+    }
+    Object.assign(item, rec);
+    item.dataURL = "";                            // disk serves the converted original now
+    delete pending[id];
+    item.status = "ready";
+    ingestStats.done++;
+  }catch(err){
+    item.status = "error";
+    item.error = friendlyErr(err);
+    delete pending[id];
+    ingestStats.failed++;
+  }
+  refreshCard(id);
+  scheduleFacets();
+}
+// Pool drained (or stopped): drop any never-started placeholders, reset the bar.
+function endIngest(){
+  if(ingestQueue.length){
+    const dead = new Set(ingestQueue.map(x => x.id));
+    items = items.filter(it => !dead.has(it.id));
+    ingestQueue.length = 0;
+  }
+  ingestStop = false;
+  hideIngestProgress();
+  render();
+}
+// Folders / filters / palette strip read every item, so coalesce their refresh to
+// once per frame while cards stream in. The grid itself updates per-card above.
+let facetsScheduled = false;
+function scheduleFacets(){
+  if(facetsScheduled) return;
+  facetsScheduled = true;
+  requestAnimationFrame(()=>{ facetsScheduled = false; renderFolders(); renderFilters(); renderTripStrip(); });
+}
+function showIngestProgress(){
+  const fin = ingestStats.done + ingestStats.failed, total = ingestStats.total;
+  if(!total) return;
+  dropzone.classList.add("busy");
+  document.getElementById("dzLabel").textContent =
+    "importing — " + fin + " of " + total + (ingestStats.failed ? (" · " + ingestStats.failed + " failed") : "");
+  document.getElementById("dzProgress").style.width = Math.round(fin / total * 100) + "%";
+}
+function hideIngestProgress(){
+  dropzone.classList.remove("busy");
+  document.getElementById("dzLabel").textContent = "drop your references here";
+  document.getElementById("dzProgress").style.width = "0";
 }
 async function retry(id){
   const it = items.find(x=>x.id===id);
@@ -635,7 +723,12 @@ async function retry(id){
 }
 
 /* ---------- drop / click ---------- */
-dropzone.addEventListener("click", ()=>fileInput.click());
+dropzone.addEventListener("click", ()=>{ if(dropzone.classList.contains("busy")) return; fileInput.click(); });
+document.getElementById("dzStop").addEventListener("click", e=>{
+  e.stopPropagation();                          // don't trigger the file picker
+  ingestStop = true;
+  document.getElementById("dzLabel").textContent = "stopping…";
+});
 fileInput.addEventListener("change", e=>{ ingest(e.target.files); fileInput.value=""; });
 ["dragenter","dragover"].forEach(ev=>dropzone.addEventListener(ev,e=>{e.preventDefault(); if(draggingCards) return; dropzone.classList.add("drag");}));
 ["dragleave","drop"].forEach(ev=>dropzone.addEventListener(ev,e=>{e.preventDefault();if(ev!=="dragover")dropzone.classList.remove("drag");}));
