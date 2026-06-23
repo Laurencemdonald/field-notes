@@ -94,6 +94,15 @@
   .fold.drop-target{color:var(--ink);outline:1px dashed var(--ink);outline-offset:4px;}
   .folders-hint{font-family:var(--serif);font-style:italic;font-size:13px;color:#A8A8A8;}
 
+  /* trip palette strip — the dominant colors of the open trip, sized by how much of it they cover */
+  .trip-strip{display:none;margin:0 0 34px;}
+  .trip-strip.show{display:block;animation:fadein .4s ease both;}
+  .trip-strip .ts-head{display:flex;align-items:baseline;gap:10px;margin:0 0 10px;}
+  .trip-strip .ts-name{font-family:var(--serif);font-style:italic;font-size:17px;color:var(--ink);text-transform:lowercase;}
+  .trip-strip .ts-meta{font-family:var(--sans);font-size:10px;text-transform:lowercase;letter-spacing:.08em;color:var(--gray);}
+  .trip-strip .ts-bar{display:flex;height:44px;border:1px solid var(--line);overflow:hidden;}
+  .trip-strip .ts-seg{height:100%;min-width:3px;}
+
   /* modal trip row */
   .m-trip-input{font-family:var(--sans);font-size:13px;letter-spacing:.02em;color:var(--ink);background:none;border:none;border-bottom:1px dashed var(--line);padding:4px 2px;outline:none;width:100%;max-width:240px;text-transform:lowercase;}
   .m-trip-input:focus{border-bottom-color:var(--ink);border-bottom-style:solid;}
@@ -167,6 +176,7 @@
     <span class="search-clear" id="searchClear" style="display:none;" title="clear">×</span>
   </div>
   <div class="folders" id="folders"></div>
+  <div class="trip-strip" id="tripStrip"></div>
   <div class="filters" id="filters"></div>
   <div class="empty-note" id="emptyNote" style="display:none;">nothing collected yet</div>
   <div class="grid" id="grid"></div>
@@ -317,6 +327,7 @@ async function apiDelete(id){
 /* ---------- render ---------- */
 function render(){
   renderFolders();
+  renderTripStrip();
   renderFilters();
   let list = items.slice();
   if(sortMode==="az") list.sort((a,b)=>(a.name||"~").localeCompare(b.name||"~"));
@@ -393,6 +404,63 @@ function renderFolders(){
   host.appendChild(mkFold("all", ready.length, null));
   folders.forEach(f=>host.appendChild(mkFold(f.name, f.count, f.name)));
   if(unsorted) host.appendChild(mkFold("unsorted", unsorted, UNSORTED));
+}
+
+// Aggregate every photo's palette in a trip into a representative set of colors,
+// each weighted by how often it appears. Near-identical hues are merged into one
+// bucket (8 levels/channel) and the bucket's average color is returned, so the
+// strip shows true colors, not bin centers. Sorted for display by hue→lightness.
+function tripPalette(name, maxSwatches){
+  maxSwatches = maxSwatches || 14;
+  const bins = new Map();
+  items.forEach(it=>{
+    if(it.status!=="ready" || (it.folder||"").trim()!==name) return;
+    (it.colors||[]).forEach(hex=>{
+      const h=(""+hex).replace("#",""); if(h.length<6) return;
+      const r=parseInt(h.slice(0,2),16), g=parseInt(h.slice(2,4),16), b=parseInt(h.slice(4,6),16);
+      if([r,g,b].some(Number.isNaN)) return;
+      const key=(r>>5)+"-"+(g>>5)+"-"+(b>>5);          // merge colors within ~32/channel
+      const e=bins.get(key)||{r:0,g:0,b:0,n:0};
+      e.r+=r; e.g+=g; e.b+=b; e.n++; bins.set(key,e);
+    });
+  });
+  let arr=[...bins.values()].map(e=>({
+    n:e.n,
+    hex:"#"+[e.r,e.g,e.b].map(s=>Math.round(s/e.n).toString(16).padStart(2,"0")).join("").toUpperCase()
+  }));
+  arr.sort((a,b)=>b.n-a.n);                            // keep the most-common buckets
+  arr=arr.slice(0,maxSwatches);
+  const total=arr.reduce((s,x)=>s+x.n,0)||1;
+  arr.forEach(x=>{ x.pct=x.n/total; });
+  arr.sort((a,b)=>{ const A=hexToHsl(a.hex),B=hexToHsl(b.hex); return (A.h-B.h)||(A.l-B.l); });
+  return arr;
+}
+
+// Show the open trip's palette above the grid; hide it for "all" / "unsorted".
+function renderTripStrip(){
+  const host=document.getElementById("tripStrip");
+  if(!host) return;
+  const name=activeFolder;
+  if(!name || name===UNSORTED){ host.className="trip-strip"; host.innerHTML=""; return; }
+  const pal=tripPalette(name);
+  if(!pal.length){ host.className="trip-strip"; host.innerHTML=""; return; }
+  const refs=items.filter(it=>it.status==="ready" && (it.folder||"").trim()===name).length;
+  host.innerHTML="";
+  const head=document.createElement("div"); head.className="ts-head";
+  const nm=document.createElement("span"); nm.className="ts-name"; nm.textContent=name;
+  const meta=document.createElement("span"); meta.className="ts-meta";
+  meta.textContent="the palette · "+refs+" reference"+(refs===1?"":"s");
+  head.appendChild(nm); head.appendChild(meta);
+  const bar=document.createElement("div"); bar.className="ts-bar";
+  bar.setAttribute("aria-label","Dominant colors for "+name);
+  pal.forEach(p=>{
+    const seg=document.createElement("div"); seg.className="ts-seg";
+    seg.style.flexGrow=p.n; seg.style.background=p.hex;
+    seg.title=p.hex+" · "+Math.round(p.pct*100)+"%";
+    bar.appendChild(seg);
+  });
+  host.appendChild(head); host.appendChild(bar);
+  host.className="trip-strip show";
 }
 function renderFilters(){
   const host = document.getElementById("filters");
