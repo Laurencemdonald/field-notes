@@ -632,7 +632,8 @@ const server = http.createServer(async (req, res) => {
       const prev = lib.find(x => x.id === id);            // preserve manual edits across re-adds/retries
       const folder = (prev && prev.folder) ? prev.folder : (auto.trip || "");
       const date = (prev && prev.date) ? prev.date : (auto.date || "");
-      const record = { id, file: displayFile, folder, date, hash: sig, ...meta, created: new Date().toISOString() };
+      const event = (prev && prev.event) ? prev.event : "";   // events are tagged by hand, never auto
+      const record = { id, file: displayFile, folder, event, date, hash: sig, ...meta, created: new Date().toISOString() };
       lib = lib.filter(x => x.id !== id);
       lib.unshift(record);
       writeLib(lib);
@@ -646,13 +647,14 @@ const server = http.createServer(async (req, res) => {
 
     // PUT /api/item -> edit name/description/folder
     if (req.method === "PUT" && p === "/api/item") {
-      const { id, name, description, folder } = await body(req);
+      const { id, name, description, folder, event } = await body(req);
       const lib = readLib();
       const it = lib.find(x => x.id === id);
       if (!it) return json(res, 404, { error: "not found" });
       if (typeof name === "string") it.name = name.trim() || it.name;
       if (typeof description === "string") it.description = description.trim();
       if (typeof folder === "string") it.folder = folder.trim();
+      if (typeof event === "string") it.event = event.trim();
       writeLib(lib);
       return json(res, 200, it);
     }

@@ -185,6 +185,7 @@
     <span class="search-clear" id="searchClear" style="display:none;" title="clear">×</span>
   </div>
   <div class="folders" id="folders"></div>
+  <div class="folders" id="events"></div>
   <div class="trip-strip" id="tripStrip"></div>
   <div class="filters" id="filters"></div>
   <div class="empty-note" id="emptyNote" style="display:none;">nothing collected yet</div>
@@ -218,6 +219,11 @@
         <div class="m-label">trip / location</div>
         <input class="m-trip-input" id="mTrip" list="tripList" placeholder="add to a trip…" autocomplete="off" spellcheck="false">
         <datalist id="tripList"></datalist>
+      </div>
+      <div class="m-row">
+        <div class="m-label">event</div>
+        <input class="m-trip-input" id="mEvent" list="eventList" placeholder="add to an event…" autocomplete="off" spellcheck="false">
+        <datalist id="eventList"></datalist>
       </div>
       <div class="m-row"><div class="m-label">date</div><div class="m-val" id="mDate"></div></div>
       <div class="m-row"><div class="m-label">category · mood</div><div class="m-val" id="mCatMood"></div></div>
@@ -295,12 +301,19 @@ let sortMode="new"; // "new" | "az"
 let searchQuery="";
 let activeFolder=null;            // null = all; "\x00unsorted" = items with no trip; else a trip name
 const UNSORTED="\x00unsorted";
+let activeEvent=null;             // null = all; "\x00noevent" = items with no event; else an event name
+const NOEVENT="\x00noevent";
 
 function matches(it){
   if(activeFolder!==null){
     const f=(it.folder||"").trim();
     if(activeFolder===UNSORTED){ if(f) return false; }
     else if(f!==activeFolder) return false;
+  }
+  if(activeEvent!==null){
+    const e=(it.event||"").trim();
+    if(activeEvent===NOEVENT){ if(e) return false; }
+    else if(e!==activeEvent) return false;
   }
   if(searchQuery){
     const hay=[it.name,it.description,it.category,it.mood,it.folder,...(it.materials||[]),...(it.colors||[])].join(" ").toLowerCase();
@@ -344,6 +357,7 @@ async function apiDelete(id){
 /* ---------- render ---------- */
 function render(){
   renderFolders();
+  renderEvents();
   renderTripStrip();
   renderFilters();
   let list = items.slice();
@@ -421,6 +435,65 @@ function renderFolders(){
   host.appendChild(mkFold("all", ready.length, null));
   folders.forEach(f=>host.appendChild(mkFold(f.name, f.count, f.name)));
   if(unsorted) host.appendChild(mkFold("unsorted", unsorted, UNSORTED));
+}
+
+// Tag the given cards with an event ("" = clears the event). Mirrors assignTrip
+// and never touches the trip — events are an independent dimension.
+async function assignEvent(ids, event){
+  ids=(ids||[]).slice();
+  if(!ids.length) return;
+  ids.forEach(id=>{ const it=items.find(x=>x.id===id); if(it) it.event=event; selectedIds.delete(id); });
+  if(selecting) updateZineCount();
+  render();
+  await Promise.all(ids.map(id=>apiEdit(id,{event})));
+}
+function eventList(){
+  const counts={};
+  items.filter(it=>it.status==="ready").forEach(it=>{
+    const e=(it.event||"").trim();
+    if(e) counts[e]=(counts[e]||0)+1;
+  });
+  return Object.keys(counts).sort((a,b)=>a.localeCompare(b)).map(name=>({name,count:counts[name]}));
+}
+function renderEvents(){
+  const host=document.getElementById("events");
+  const ready=items.filter(it=>it.status==="ready");
+  if(!ready.length){ host.innerHTML=""; if(activeEvent!==null) activeEvent=null; return; }
+
+  const events=eventList();
+  const untagged=ready.filter(it=>!(it.event||"").trim()).length;
+
+  if(activeEvent && activeEvent!==NOEVENT && !events.some(e=>e.name===activeEvent)) activeEvent=null;
+  if(activeEvent===NOEVENT && !untagged) activeEvent=null;
+
+  host.innerHTML="";
+  const lab=document.createElement("div"); lab.className="folders-label"; lab.textContent="events"; host.appendChild(lab);
+
+  // no events yet → show a hint so the feature is discoverable
+  if(!events.length){
+    if(activeEvent!==null) activeEvent=null;
+    const hint=document.createElement("div"); hint.className="folders-hint";
+    hint.textContent="open a reference (or drag a selection here) to tag its event";
+    host.appendChild(hint);
+    return;
+  }
+
+  const mkEv=(label,count,key)=>{
+    const el=document.createElement("div");
+    el.className="fold"+(activeEvent===key?" active":"");
+    el.textContent=label;
+    if(count!=null){ const c=document.createElement("span"); c.className="fc"; c.textContent=count; el.appendChild(c); }
+    el.addEventListener("click",()=>{ activeEvent = (activeEvent===key?null:key); render(); });
+    if(key!==null){
+      el.addEventListener("dragover", e=>{ if(!draggingCards) return; e.preventDefault(); e.dataTransfer.dropEffect="move"; el.classList.add("drop-target"); });
+      el.addEventListener("dragleave", ()=>el.classList.remove("drop-target"));
+      el.addEventListener("drop", e=>{ if(!draggingCards) return; e.preventDefault(); e.stopPropagation(); el.classList.remove("drop-target"); assignEvent(dragIds, key===NOEVENT?"":key); });
+    }
+    return el;
+  };
+  host.appendChild(mkEv("all", ready.length, null));
+  events.forEach(e=>host.appendChild(mkEv(e.name, e.count, e.name)));
+  if(untagged) host.appendChild(mkEv("untagged", untagged, NOEVENT));
 }
 
 // Aggregate every photo's palette in a trip into a representative set of colors,
@@ -580,7 +653,8 @@ function cardEl(it){
     const desc = document.createElement("p"); desc.className="ref-desc"; desc.textContent=it.description;
     const bottom = document.createElement("div"); bottom.className="ref-bottom";
     const d = fmtDate(it.date,false);
-    const tag = document.createElement("div"); tag.className="tag-line"; tag.textContent = it.category + " · " + it.mood + (d ? " · " + d : "");
+    const tag = document.createElement("div"); tag.className="tag-line";
+    tag.textContent = [it.event, it.category + " · " + it.mood + (d ? " · " + d : "")].filter(Boolean).join(" · ");
     const sw = document.createElement("div"); sw.className="swatches";
     (it.colors||[]).slice(0,4).forEach(c=>{ const s=document.createElement("div"); s.className="swatch"; s.style.background=c; sw.appendChild(s); });
     bottom.appendChild(tag); bottom.appendChild(sw);
@@ -692,7 +766,7 @@ let facetsScheduled = false;
 function scheduleFacets(){
   if(facetsScheduled) return;
   facetsScheduled = true;
-  requestAnimationFrame(()=>{ facetsScheduled = false; renderFolders(); renderFilters(); renderTripStrip(); });
+  requestAnimationFrame(()=>{ facetsScheduled = false; renderFolders(); renderEvents(); renderFilters(); renderTripStrip(); });
 }
 function showIngestProgress(){
   const fin = ingestStats.done + ingestStats.failed, total = ingestStats.total;
@@ -757,6 +831,13 @@ function paintModal(){
   tripEl.value = it.folder || "";
   const dl=document.getElementById("tripList"); dl.innerHTML="";
   folderList().forEach(f=>{ const o=document.createElement("option"); o.value=f.name; dl.appendChild(o); });
+
+  // event field + autocomplete from existing events
+  const evEl=document.getElementById("mEvent");
+  evEl.value = it.event || "";
+  const edl=document.getElementById("eventList"); edl.innerHTML="";
+  eventList().forEach(e=>{ const o=document.createElement("option"); o.value=e.name; edl.appendChild(o); });
+
   document.getElementById("mDate").textContent = fmtDate(it.date,true) || "—";
 
   const swWrap=document.getElementById("mSwatches"); swWrap.innerHTML="";
@@ -807,6 +888,18 @@ async function saveTrip(){
 }
 tripInput.addEventListener("change", saveTrip);
 tripInput.addEventListener("keydown", e=>{ if(e.key==="Enter"){ e.preventDefault(); tripInput.blur(); } });
+
+const eventInput=document.getElementById("mEvent");
+async function saveEvent(){
+  const it=items.find(x=>x.id===activeId); if(!it) return;
+  const val=eventInput.value.trim();
+  if(val===(it.event||"")) return;            // no change
+  it.event=val;
+  await apiEdit(it.id,{event:val});
+  render();                                    // refresh events bar + grid
+}
+eventInput.addEventListener("change", saveEvent);
+eventInput.addEventListener("keydown", e=>{ if(e.key==="Enter"){ e.preventDefault(); eventInput.blur(); } });
 
 /* ---------- search ---------- */
 const searchInput=document.getElementById("search");
