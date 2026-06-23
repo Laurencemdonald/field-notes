@@ -266,6 +266,41 @@ function extractPalette(absPath, count = 4) {
   });
 }
 
+// Perceptual hash (dHash): shrink to 9x8 grayscale and record, for each row, whether
+// each pixel is brighter than its right neighbour — 64 bits, returned as 16 hex chars.
+// Two photos whose hashes differ in only a few bits are near-duplicates (burst shots,
+// slight reframes). Returns "" if ImageMagick is unavailable or the read fails.
+function perceptualHash(absPath) {
+  return new Promise(resolve => {
+    if (!MAGICK_BIN) return resolve("");
+    const args = [absPath, "-resize", "9x8!", "-colorspace", "Gray", "-depth", "8", "txt:-"];
+    let child;
+    try { child = spawn(MAGICK_BIN, args, { env: SPAWN_ENV }); }
+    catch (e) { return resolve(""); }
+    let out = "";
+    const killer = setTimeout(() => { try { child.kill("SIGKILL"); } catch (e) {} resolve(""); }, 15000);
+    child.stdout.on("data", d => out += d);
+    child.on("error", () => { clearTimeout(killer); resolve(""); });
+    child.on("close", () => {
+      clearTimeout(killer);
+      const grid = {};                              // "x,y" -> gray value (txt: enumerates every pixel)
+      for (const line of out.split("\n")) {
+        const m = /^(\d+),(\d+):\s*\(\s*(\d+)/.exec(line);
+        if (m) grid[m[1] + "," + m[2]] = parseInt(m[3], 10);
+      }
+      let bits = "";
+      for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) {
+        const a = grid[x + "," + y], b = grid[(x + 1) + "," + y];
+        if (a == null || b == null) return resolve("");
+        bits += (a > b) ? "1" : "0";
+      }
+      let hex = "";
+      for (let i = 0; i < 64; i += 4) hex += parseInt(bits.slice(i, i + 4), 2).toString(16);
+      resolve(hex);
+    });
+  });
+}
+
 /* ---------------- photo metadata: location + date ---------------- */
 const GEO_CACHE = path.join(CACHE_DIR, "geo.json");
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -622,6 +657,10 @@ const server = http.createServer(async (req, res) => {
         if (palette.length) meta.colors = palette;
       } catch (e) { /* keep model colors */ }
 
+      // 4c) perceptual hash for near-duplicate detection (best-effort).
+      let phash = "";
+      try { phash = await perceptualHash(analyzeAbs); } catch (e) { /* no phash */ }
+
       // 5) auto-detect trip (location) + date from the stored image's EXIF.
       // Use the display file: for HEIC that's the converted JPEG (EXIF preserved),
       // for everything else it's the original bytes.
@@ -633,7 +672,7 @@ const server = http.createServer(async (req, res) => {
       const folder = (prev && prev.folder) ? prev.folder : (auto.trip || "");
       const date = (prev && prev.date) ? prev.date : (auto.date || "");
       const event = (prev && prev.event) ? prev.event : "";   // events are tagged by hand, never auto
-      const record = { id, file: displayFile, folder, event, date, hash: sig, ...meta, created: new Date().toISOString() };
+      const record = { id, file: displayFile, folder, event, date, hash: sig, phash, ...meta, created: new Date().toISOString() };
       lib = lib.filter(x => x.id !== id);
       lib.unshift(record);
       writeLib(lib);

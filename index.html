@@ -298,6 +298,29 @@ const CAT_ORDER=["object","material","space","type","texture","detail"];
 const MOOD_ORDER=["bold","quiet","warm","sharp","textured","weird"];
 const filters={ category:new Set(), mood:new Set(), material:new Set(), color:new Set() };
 let sortMode="new"; // "new" | "az"
+let dupMode=false;  // when true, show only near-duplicate clusters, twins grouped together
+
+// Hamming distance between two dHash hex strings (lower = more visually similar).
+const DUP_THRESHOLD=10;             // out of 64 bits; bursts/reframes land well under this
+function hamming(a,b){
+  if(!a||!b||a.length!==b.length) return 64;
+  let d=0;
+  for(let i=0;i<a.length;i++){ let x=parseInt(a[i],16)^parseInt(b[i],16); while(x){ d+=x&1; x>>=1; } }
+  return d;
+}
+// Group the given items into clusters of near-duplicates (union-find), keeping only
+// clusters of 2+ so the result is "things that have a twin", twins adjacent.
+function dupClusters(list){
+  const withHash=list.filter(it=>it.phash);
+  const parent=withHash.map((_,i)=>i);
+  const find=i=>{ while(parent[i]!==i){ parent[i]=parent[parent[i]]; i=parent[i]; } return i; };
+  for(let i=0;i<withHash.length;i++) for(let j=i+1;j<withHash.length;j++){
+    if(hamming(withHash[i].phash,withHash[j].phash)<=DUP_THRESHOLD) parent[find(i)]=find(j);
+  }
+  const groups={};
+  withHash.forEach((it,i)=>{ const r=find(i); (groups[r]=groups[r]||[]).push(it); });
+  return Object.values(groups).filter(g=>g.length>=2);
+}
 let searchQuery="";
 let activeFolder=null;            // null = all; "\x00unsorted" = items with no trip; else a trip name
 const UNSORTED="\x00unsorted";
@@ -370,8 +393,15 @@ function render(){
   });
   // in-progress cards (looking/error) always show; only ready cards obey filters
   list = list.filter(it => it.status!=="ready" || matches(it));
+  if(dupMode){
+    // collapse to just the near-duplicate clusters, twins sitting next to each other
+    list = dupClusters(list.filter(it=>it.status==="ready")).flat();
+  }
   grid.innerHTML = "";
   emptyNote.style.display = items.length ? "none" : "block";
+  if(dupMode && !list.length && items.length){
+    const n=document.createElement("div"); n.className="looking"; n.textContent="no near-duplicates found"; grid.appendChild(n);
+  }
   list.forEach(it => grid.appendChild(cardEl(it)));
 }
 
@@ -603,6 +633,16 @@ function renderFilters(){
     el.addEventListener("click",()=>{ sortMode=mode; render(); }); sv.appendChild(el);
   });
   sortRow.appendChild(sl); sortRow.appendChild(sv); host.appendChild(sortRow);
+
+  // view row: duplicate-finder toggle (only useful once 2+ photos carry a perceptual hash)
+  if(ready.filter(it=>it.phash).length>=2){
+    const viewRow=document.createElement("div"); viewRow.className="facet";
+    const vl=document.createElement("div"); vl.className="facet-label"; vl.textContent="view";
+    const vv=document.createElement("div"); vv.className="facet-values";
+    const dup=document.createElement("div"); dup.className="fval"+(dupMode?" active":""); dup.textContent="possible duplicates";
+    dup.addEventListener("click",()=>{ dupMode=!dupMode; render(); });
+    vv.appendChild(dup); viewRow.appendChild(vl); viewRow.appendChild(vv); host.appendChild(viewRow);
+  } else if(dupMode){ dupMode=false; }   // nothing to compare → leave duplicate view
 
   // meta line: counts + clear
   const active=activeCount();
