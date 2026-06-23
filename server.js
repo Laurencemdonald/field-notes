@@ -47,7 +47,7 @@ const LIB_DIR = path.join(ROOT, "library");
 const CACHE_DIR = path.join(ROOT, ".cache");
 const LIB_JSON = path.join(ROOT, "library.json");
 const API_KEY = process.env.ANTHROPIC_API_KEY || "";          // optional fallback
-const MODEL = process.env.FIELD_NOTES_MODEL || "";            // optional override
+const MODEL = process.env.FIELD_NOTES_MODEL || "claude-haiku-4-5"; // fast + cheap for tagging; override via env
 
 // Resolve the `claude` CLI to an absolute path. When macOS auto-starts this
 // server at login (launchd), PATH is bare and a plain "claude" can't be found —
@@ -71,6 +71,23 @@ const CLAUDE_BIN = (() => {
 // True when we found a real `claude` binary (absolute path). When false AND no API
 // key is set, image analysis can't run — we say so loudly at startup.
 const CLAUDE_FOUND = CLAUDE_BIN !== "claude";
+
+// Resolve the ImageMagick binary (v7 `magick`, falling back to v6 `convert`) the
+// same way we resolve `claude`, so it works under a bare launchd PATH too. Used to
+// sample a TRUE dominant-color palette from the pixels — more accurate than asking
+// the model to guess hex values. Empty string when not installed (we then keep the
+// model's colors as a fallback).
+const MAGICK_BIN = (() => {
+  if (process.env.MAGICK_BIN) return process.env.MAGICK_BIN;
+  const dirs = ((process.env.PATH || "") + ":" + EXTRA_PATH).split(":").filter(Boolean);
+  for (const name of ["magick", "convert"]) {
+    for (const dir of dirs) {
+      const p = path.join(dir, name);
+      try { fs.accessSync(p, fs.constants.X_OK); return p; } catch (e) {}
+    }
+  }
+  return "";
+})();
 
 if (!fs.existsSync(LIB_DIR)) fs.mkdirSync(LIB_DIR, { recursive: true });
 if (!fs.existsSync(CACHE_DIR)) fs.mkdirSync(CACHE_DIR, { recursive: true });
@@ -180,7 +197,7 @@ function runClaudeCLI(imageRelPath) {
     const prompt =
       "Read the image file at " + imageRelPath + ".\n\n" +
       SYSTEM_PROMPT + "\n\nReturn ONLY the JSON object and nothing else.";
-    const args = ["-p", prompt, "--output-format", "json", "--allowedTools", "Read"];
+    const args = ["-p", prompt, "--output-format", "json", "--allowedTools", "Read", "--strict-mcp-config"];
     if (MODEL) args.push("--model", MODEL);
 
     let child;
@@ -214,6 +231,38 @@ function runSips(args) {
     child.stderr.on("data", d => err += d);
     child.on("error", e => reject(e)); // ENOENT if not macOS / sips missing
     child.on("close", code => code === 0 ? resolve() : reject(new Error("sips: " + (err.trim() || code))));
+  });
+}
+
+// Sample a TRUE dominant-color palette from an image's pixels via ImageMagick.
+// We downscale, quantize to a few buckets, then read the histogram so the colors
+// come back ordered by how much of the image they actually cover. Returns up to
+// `count` "#RRGGBB" strings, or [] if ImageMagick is unavailable or anything fails
+// (the caller then keeps the model's guessed colors as a fallback).
+function extractPalette(absPath, count = 4) {
+  return new Promise(resolve => {
+    if (!MAGICK_BIN) return resolve([]);
+    // quantize to a few more buckets than we need, then keep the most-frequent ones
+    const args = [absPath, "-resize", "200x200", "-colors", String(count + 2),
+                  "-depth", "8", "-format", "%c", "histogram:info:-"];
+    let child;
+    try { child = spawn(MAGICK_BIN, args, { env: SPAWN_ENV }); }
+    catch (e) { return resolve([]); }
+    let out = "";
+    const killer = setTimeout(() => { try { child.kill("SIGKILL"); } catch (e) {} resolve([]); }, 15000);
+    child.stdout.on("data", d => out += d);
+    child.on("error", () => { clearTimeout(killer); resolve([]); });
+    child.on("close", () => {
+      clearTimeout(killer);
+      // each line: "  12345: (r,g,b) #RRGGBB srgb(...)" — pair the pixel count with the hex
+      const rows = [];
+      for (const line of out.split("\n")) {
+        const m = /^\s*(\d+):.*?(#[0-9A-Fa-f]{6})/.exec(line);
+        if (m) rows.push({ n: parseInt(m[1], 10), hex: "#" + m[2].slice(1).toUpperCase() });
+      }
+      rows.sort((a, b) => b.n - a.n);                 // most-of-the-image first
+      resolve(rows.slice(0, count).map(r => r.hex));
+    });
   });
 }
 
@@ -564,6 +613,14 @@ const server = http.createServer(async (req, res) => {
         try { fs.unlinkSync(path.join(LIB_DIR, displayFile)); } catch (_) {}
         return json(res, 500, { error: (err && err.message) ? err.message : "analysis failed" });
       }
+
+      // 4b) replace the model's guessed hex colors with a real palette sampled
+      // from the pixels (ImageMagick). Falls back to the model's colors if IM
+      // isn't installed or the sample comes back empty.
+      try {
+        const palette = await extractPalette(analyzeAbs, 4);
+        if (palette.length) meta.colors = palette;
+      } catch (e) { /* keep model colors */ }
 
       // 5) auto-detect trip (location) + date from the stored image's EXIF.
       // Use the display file: for HEIC that's the converted JPEG (EXIF preserved),
