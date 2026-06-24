@@ -86,6 +86,14 @@ python3 -m json.tool library.json >/dev/null && echo OK            # data file s
 
 `server.js` and `index.html` are terse on purpose. Match it: compact helpers, single-letter locals in tight loops, and comments that explain **why** (the non-obvious constraint or failure mode being guarded against), not what the line does. New machine-specific behavior gets an env-var override (cf. `PORT`, `FIELD_NOTES_MODEL`, `CLAUDE_BIN`, `MAGICK_BIN`).
 
+### Privacy (this fork is public)
+
+The `SP00KYCHIEF/field-notes` fork is **public**, so anything that gets pushed — commit messages, PR titles/bodies, code comments, branch names — is world-readable.
+
+- **Refer to the maintainer only as the GitHub handle `SP00KYCHIEF`** in anything publicly visible. Never put a real name, email address, or other personal identifier into commits, PRs, comments, or committed files.
+- **Never commit personal data.** The user's actual photos and metadata live in `library/`, `library.json`, and `.cache/`, which are gitignored — keep it that way. Don't `git add -f` anything under those paths, don't relax those `.gitignore` rules, and don't paste real EXIF/location/library contents into commit messages or PR descriptions.
+- Keep examples and test fixtures to the bundled `samples/` set, never the user's own library.
+
 ### Git & commits
 
 The history follows a consistent shape — match it rather than committing straight to `main`:
