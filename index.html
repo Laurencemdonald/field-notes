@@ -683,6 +683,70 @@ searchInput.addEventListener("input", ()=>{
 });
 searchClear.addEventListener("click", ()=>{ searchInput.value=""; searchQuery=""; searchClear.style.display="none"; searchInput.focus(); render(); });
 
+/* ---------- compare two references ---------- */
+let comparing=false;
+
+// Build one read-only column for a single item, reusing the modal's row styles.
+function mkCmpRow(label){
+  const row=document.createElement("div"); row.className="m-row";
+  const l=document.createElement("div"); l.className="m-label"; l.textContent=label;
+  row.appendChild(l);
+  return row;
+}
+function compareColumn(it){
+  const col=document.createElement("div"); col.className="cmp-col";
+
+  const imgWrap=document.createElement("div"); imgWrap.className="cmp-img";
+  const img=document.createElement("img"); img.src=imgSrc(it,1200); img.alt=it.name||"";
+  imgWrap.appendChild(img); col.appendChild(imgWrap);
+
+  const name=document.createElement("div"); name.className="cmp-name"; name.textContent=it.name||"untitled";
+  col.appendChild(name);
+  if(it.description){ const d=document.createElement("div"); d.className="cmp-desc"; d.textContent=it.description; col.appendChild(d); }
+
+  const palRow=mkCmpRow("palette");
+  const sw=document.createElement("div"); sw.className="m-swatches";
+  (it.colors||[]).forEach(c=>{
+    const box=document.createElement("div"); box.style.cssText="display:flex;flex-direction:column;align-items:center;gap:5px;";
+    const s=document.createElement("div"); s.className="m-sw"; s.style.background=c;
+    const hex=document.createElement("div"); hex.className="m-sw-hex"; hex.textContent=c;
+    box.appendChild(s); box.appendChild(hex); sw.appendChild(box);
+  });
+  palRow.appendChild(sw); col.appendChild(palRow);
+
+  const matRow=mkCmpRow("materials");
+  const mv=document.createElement("div"); mv.className="m-mats";
+  mv.textContent=(it.materials&&it.materials.length)?it.materials.join(", "):"—";
+  matRow.appendChild(mv); col.appendChild(matRow);
+
+  const cmRow=mkCmpRow("category · mood");
+  const cmv=document.createElement("div"); cmv.className="m-val";
+  cmv.textContent=it.category+" · "+it.mood;
+  cmRow.appendChild(cmv); col.appendChild(cmRow);
+
+  const tdRow=mkCmpRow("trip · date");
+  const tdv=document.createElement("div"); tdv.className="m-val";
+  tdv.textContent=[(it.folder||"").trim(), fmtDate(it.date,true)].filter(Boolean).join(" · ")||"—";
+  tdRow.appendChild(tdv); col.appendChild(tdRow);
+
+  return col;
+}
+function openCompare(){
+  const ids=[...selectedIds];
+  if(ids.length!==2) return;
+  const a=items.find(x=>x.id===ids[0]), b=items.find(x=>x.id===ids[1]);
+  if(!a||!b) return;
+  const g=document.getElementById("cmpGrid"); g.innerHTML="";
+  g.appendChild(compareColumn(a)); g.appendChild(compareColumn(b));
+  comparing=true;
+  overlay.classList.add("cmp","open");
+}
+function closeCompare(){
+  overlay.classList.remove("cmp","open");
+  comparing=false;
+  document.getElementById("cmpGrid").innerHTML="";
+}
+
 /* ---------- make a zine ---------- */
 let selecting=false;
 const selectedIds=new Set();
@@ -741,6 +805,8 @@ document.getElementById("ztAll").addEventListener("click", ()=>{
   updateZineCount();
 });
 ztCreate.addEventListener("click", createZine);
+document.getElementById("ztCompare").addEventListener("click", ()=>{ if(selectedIds.size===2) openCompare(); });
+document.getElementById("cmpClose").addEventListener("click", closeCompare);
 
 // readable date range for the cover, e.g. "may 30–31, 2026"
 function dateRange(list){
