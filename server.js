@@ -42,6 +42,9 @@ const inFlight = new Set();
 })();
 
 const PORT = process.env.PORT || 4317;
+// Bind to loopback by default so the library never leaves this machine — the whole
+// promise of the app. Set HOST=0.0.0.0 to deliberately expose it on your LAN.
+const HOST = process.env.HOST || "127.0.0.1";
 const ROOT = __dirname;
 const LIB_DIR = path.join(ROOT, "library");
 const CACHE_DIR = path.join(ROOT, ".cache");
@@ -117,8 +120,25 @@ function readLib() {
   try { return JSON.parse(fs.readFileSync(LIB_JSON, "utf8")); }
   catch (e) { return []; }
 }
+// Atomic write: stringify to a temp file, back up the last good copy, then rename
+// over the target. rename() is atomic on the same filesystem, so a crash mid-write
+// can never leave library.json truncated. Zero dependencies.
 function writeLib(arr) {
-  fs.writeFileSync(LIB_JSON, JSON.stringify(arr, null, 2));
+  const tmp = LIB_JSON + ".tmp";
+  fs.writeFileSync(tmp, JSON.stringify(arr, null, 2));
+  try { fs.copyFileSync(LIB_JSON, LIB_JSON + ".bak"); } catch (e) {}   // one-deep backup (best effort)
+  fs.renameSync(tmp, LIB_JSON);
+}
+
+// Serialize read-modify-write sections on library.json. A synchronous read→write
+// can't interleave in single-threaded Node, but a handler that holds the array
+// across an `await` (e.g. /api/backfill during geocoding) can clobber a write that
+// landed meanwhile. Every mutating critical section runs through this queue.
+let libLock = Promise.resolve();
+function withLibLock(fn) {
+  const next = libLock.then(fn, fn);
+  libLock = next.then(() => {}, () => {});
+  return next;
 }
 function body(req) {
   return new Promise((res, rej) => {
@@ -135,6 +155,18 @@ function json(res, code, obj) {
   const s = JSON.stringify(obj);
   res.writeHead(code, { "content-type": "application/json", "content-length": Buffer.byteLength(s) });
   res.end(s);
+}
+// CSRF guard. A page on another origin can POST to us with content-type:text/plain
+// (a CORS "simple request" — no preflight), so binding to loopback isn't enough on
+// its own. Reject when an Origin/Referer header is present and doesn't match us.
+// Absent headers => a non-browser client (curl, the CLI) => allowed.
+function sameOrigin(req) {
+  const ok = u => u === "http://localhost:" + PORT || u === "http://127.0.0.1:" + PORT;
+  const o = req.headers.origin;
+  if (o) { try { return ok(new URL(o).origin); } catch (e) { return false; } }
+  const r = req.headers.referer;
+  if (r) { try { return ok(new URL(r).origin); } catch (e) { return false; } }
+  return true;
 }
 function dataURLToBuffer(dataURL) {
   const m = /^data:([^;]+);base64,(.*)$/s.exec(dataURL || "");
@@ -387,6 +419,11 @@ const server = http.createServer(async (req, res) => {
   const p = url.pathname;
 
   try {
+    // Block state-changing requests that originate from another site.
+    if ((req.method === "POST" || req.method === "PUT" || req.method === "DELETE") && !sameOrigin(req)) {
+      return json(res, 403, { error: "cross-origin request blocked" });
+    }
+
     // GET /  -> app
     if (req.method === "GET" && (p === "/" || p === "/index.html")) {
       return serveFile(res, path.join(ROOT, "index.html"));
@@ -475,26 +512,46 @@ const server = http.createServer(async (req, res) => {
     // POST /api/backfill -> fill missing trip/date on existing items from their image EXIF.
     // Only fills blanks — never overwrites a trip you've set by hand.
     if (req.method === "POST" && p === "/api/backfill") {
-      const lib = readLib();
-      let updated = 0;
-      for (const it of lib) {
+      // Phase 1 (no lock): the slow part — read EXIF + reverse-geocode every item
+      // that still needs a trip/date. Collect results keyed by id and touch nothing
+      // yet, so edits made during the (possibly long) geocoding are never lost.
+      const snapshot = readLib();
+      const updates = {};                                  // id -> { folder?, date? }
+      for (const it of snapshot) {
         const needTrip = !(it.folder || "").trim();
         const needDate = it.date === undefined || it.date === null;
         if (!needTrip && !needDate) continue;
+        const u = {};
         const abs = path.join(LIB_DIR, it.file);
-        if (!fs.existsSync(abs)) { if (it.date === undefined) it.date = ""; continue; }
-        const m = await readPhotoMeta(abs);
-        if (needDate) it.date = m.date || "";
-        if (needTrip) {
-          const city = await reverseGeocode(m.lat, m.lon);
-          if (city) it.folder = city;
-          else if (it.folder === undefined) it.folder = "";
-          if (m.lat != null) await sleep(1100);          // be polite to the geocoder (≤1 req/sec)
+        if (!fs.existsSync(abs)) { if (needDate) u.date = ""; }
+        else {
+          const m = await readPhotoMeta(abs);
+          if (needDate) u.date = m.date || "";
+          if (needTrip) {
+            const city = await reverseGeocode(m.lat, m.lon);
+            if (city) u.folder = city;
+            if (m.lat != null) await sleep(1100);          // be polite to the geocoder (≤1 req/sec)
+          }
         }
-        updated++;
+        if (Object.keys(u).length) updates[it.id] = u;
       }
-      writeLib(lib);
-      return json(res, 200, { ok: true, updated, count: lib.length });
+      // Phase 2 (locked): re-read the current library and apply gathered values
+      // only to fields that are STILL blank — a trip the user set by hand while we
+      // were geocoding always wins.
+      const result = await withLibLock(() => {
+        const lib = readLib();
+        let updated = 0;
+        for (const it of lib) {
+          const u = updates[it.id]; if (!u) continue;
+          let touched = false;
+          if ("date" in u && (it.date === undefined || it.date === null)) { it.date = u.date; touched = true; }
+          if ("folder" in u && !(it.folder || "").trim()) { it.folder = u.folder; touched = true; }
+          if (touched) updated++;
+        }
+        writeLib(lib);
+        return { updated, count: lib.length };
+      });
+      return json(res, 200, { ok: true, ...result });
     }
 
     // POST /api/add -> { id, dataURL, filename } : convert, downscale, analyze, persist
@@ -571,16 +628,19 @@ const server = http.createServer(async (req, res) => {
       const auto = await detectTripAndDate(path.join(LIB_DIR, displayFile));
 
       // 6) persist (replace any existing record with this id, so retries don't duplicate)
-      let lib = readLib();
-      const prev = lib.find(x => x.id === id);            // preserve manual edits across re-adds/retries
-      const folder = (prev && prev.folder) ? prev.folder : (auto.trip || "");
-      const date = (prev && prev.date) ? prev.date : (auto.date || "");
-      const record = { id, file: displayFile, folder, date, hash: sig, ...meta, created: new Date().toISOString() };
-      lib = lib.filter(x => x.id !== id);
-      lib.unshift(record);
-      writeLib(lib);
+      const record = await withLibLock(() => {
+        let lib = readLib();
+        const prev = lib.find(x => x.id === id);          // preserve manual edits across re-adds/retries
+        const folder = (prev && prev.folder) ? prev.folder : (auto.trip || "");
+        const date = (prev && prev.date) ? prev.date : (auto.date || "");
+        const rec = { id, file: displayFile, folder, date, hash: sig, ...meta, created: new Date().toISOString() };
+        lib = lib.filter(x => x.id !== id);
+        lib.unshift(rec);
+        writeLib(lib);
+        return rec;
+      });
 
-      // 6) clean up scratch files
+      // 7) clean up scratch files
       try { fs.unlinkSync(srcAbs); } catch (_) {}
       try { fs.unlinkSync(anAbs); } catch (_) {}
 
@@ -590,26 +650,31 @@ const server = http.createServer(async (req, res) => {
     // PUT /api/item -> edit name/description/folder
     if (req.method === "PUT" && p === "/api/item") {
       const { id, name, description, folder } = await body(req);
-      const lib = readLib();
-      const it = lib.find(x => x.id === id);
-      if (!it) return json(res, 404, { error: "not found" });
-      if (typeof name === "string") it.name = name.trim() || it.name;
-      if (typeof description === "string") it.description = description.trim();
-      if (typeof folder === "string") it.folder = folder.trim();
-      writeLib(lib);
-      return json(res, 200, it);
+      const result = await withLibLock(() => {
+        const lib = readLib();
+        const it = lib.find(x => x.id === id);
+        if (!it) return { code: 404, body: { error: "not found" } };
+        if (typeof name === "string") it.name = name.trim() || it.name;
+        if (typeof description === "string") it.description = description.trim();
+        if (typeof folder === "string") it.folder = folder.trim();
+        writeLib(lib);
+        return { code: 200, body: it };
+      });
+      return json(res, result.code, result.body);
     }
 
     // DELETE /api/item?id=... -> remove record + image
     if (req.method === "DELETE" && p === "/api/item") {
       const id = url.searchParams.get("id");
-      let lib = readLib();
-      const it = lib.find(x => x.id === id);
-      if (it) {
-        try { fs.unlinkSync(path.join(LIB_DIR, it.file)); } catch (e) {}
-        lib = lib.filter(x => x.id !== id);
-        writeLib(lib);
-      }
+      await withLibLock(() => {
+        let lib = readLib();
+        const it = lib.find(x => x.id === id);
+        if (it) {
+          try { fs.unlinkSync(path.join(LIB_DIR, it.file)); } catch (e) {}
+          lib = lib.filter(x => x.id !== id);
+          writeLib(lib);
+        }
+      });
       return json(res, 200, { ok: true });
     }
 
@@ -619,8 +684,11 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, () => {
+server.listen(PORT, HOST, () => {
   console.log("\n  Field Notes  →  http://localhost:" + PORT);
+  if (HOST !== "127.0.0.1" && HOST !== "localhost") {
+    console.log("  ⚠  bound to " + HOST + " — reachable from other machines on your network");
+  }
   console.log("  library: " + LIB_JSON);
   if (CLAUDE_FOUND) {
     console.log("  analysis: via `" + CLAUDE_BIN + "` CLI — no API key needed");

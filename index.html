@@ -618,6 +618,7 @@ function paintModal(){
   } else {
     actions.appendChild(mkBtn("edit","btn", ()=>{ editing=true; paintModal(); setTimeout(()=>placeCursorEnd(nameEl),0); }));
     actions.appendChild(mkBtn("delete","btn danger", async ()=>{
+      if(!confirm("Delete “"+(it.name||"this reference")+"”?\nThis removes the original photo from your library and can't be undone.")) return;
       await apiDelete(it.id);
       items = items.filter(x=>x.id!==it.id);
       render(); closeModal();
