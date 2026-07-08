@@ -138,6 +138,7 @@
   .zt-count.warn{color:#9a4b3f;}
   .zt-link{font-family:var(--sans);font-size:11.5px;letter-spacing:.04em;color:var(--gray);text-transform:lowercase;cursor:pointer;text-decoration:underline;text-underline-offset:2px;}
   .zt-link:hover{color:var(--ink);}
+  .zt-link.disabled{opacity:.4;cursor:default;pointer-events:none;text-decoration:none;}
   .zt-create{font-family:var(--sans);font-size:12px;text-transform:lowercase;letter-spacing:.04em;border:1px solid var(--ink);padding:9px 16px;cursor:pointer;background:none;color:var(--ink);}
   .zt-create:hover{background:var(--ink);color:var(--bg);}
   .zt-create:disabled{opacity:.4;cursor:default;}
@@ -178,6 +179,7 @@
   <span class="zt-count" id="ztCount">0 selected</span>
   <span class="zt-link" id="ztAll">select all shown</span>
   <span class="zt-link" id="ztClear">clear</span>
+  <span class="zt-link disabled" id="ztCompare" title="select exactly two to compare">compare</span>
   <span class="zt-fmt" id="ztFmt">
     <span class="zf active" data-fmt="pages">pages</span>
     <span class="zf" data-fmt="mini">mini-zine</span>
@@ -680,6 +682,7 @@ function exitSelect(){
 function updateZineCount(){
   const n=selectedIds.size;
   ztCreate.disabled=n===0;
+  document.getElementById("ztCompare").classList.toggle("disabled", n!==2);
   if(n===0){ ztCount.textContent="select images"; ztCount.classList.remove("warn"); return; }
   let txt, warn=false;
   if(zineFormat==="mini"){
