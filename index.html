@@ -623,13 +623,7 @@ function paintModal(){
   folderList().forEach(f=>{ const o=document.createElement("option"); o.value=f.name; dl.appendChild(o); });
   document.getElementById("mDate").textContent = fmtDate(it.date,true) || "—";
 
-  const swWrap=document.getElementById("mSwatches"); swWrap.innerHTML="";
-  (it.colors||[]).forEach(c=>{
-    const box=document.createElement("div"); box.style.cssText="display:flex;flex-direction:column;align-items:center;gap:5px;";
-    const s=document.createElement("div"); s.className="m-sw"; s.style.background=c;
-    const hex=document.createElement("div"); hex.className="m-sw-hex"; hex.textContent=c;
-    box.appendChild(s); box.appendChild(hex); swWrap.appendChild(box);
-  });
+  fillSwatches(document.getElementById("mSwatches"), it.colors);
   document.getElementById("mMats").textContent = (it.materials&&it.materials.length)?it.materials.join(", "):"—";
 
   const actions=document.getElementById("mActions"); actions.innerHTML="";
@@ -694,6 +688,17 @@ function mkCmpRow(label){
   row.appendChild(l);
   return row;
 }
+// Fill a host element with labelled colour swatches (shared by the modal + compare view).
+function fillSwatches(host, colors){
+  host.innerHTML="";
+  (colors||[]).forEach(c=>{
+    const box=document.createElement("div"); box.style.cssText="display:flex;flex-direction:column;align-items:center;gap:5px;";
+    const s=document.createElement("div"); s.className="m-sw"; s.style.background=c;
+    const hex=document.createElement("div"); hex.className="m-sw-hex"; hex.textContent=c;
+    box.appendChild(s); box.appendChild(hex); host.appendChild(box);
+  });
+  return host;
+}
 function compareColumn(it){
   const col=document.createElement("div"); col.className="cmp-col";
 
@@ -707,13 +712,7 @@ function compareColumn(it){
 
   const palRow=mkCmpRow("palette");
   const sw=document.createElement("div"); sw.className="m-swatches";
-  (it.colors||[]).forEach(c=>{
-    const box=document.createElement("div"); box.style.cssText="display:flex;flex-direction:column;align-items:center;gap:5px;";
-    const s=document.createElement("div"); s.className="m-sw"; s.style.background=c;
-    const hex=document.createElement("div"); hex.className="m-sw-hex"; hex.textContent=c;
-    box.appendChild(s); box.appendChild(hex); sw.appendChild(box);
-  });
-  palRow.appendChild(sw); col.appendChild(palRow);
+  palRow.appendChild(fillSwatches(sw, it.colors)); col.appendChild(palRow);
 
   const matRow=mkCmpRow("materials");
   const mv=document.createElement("div"); mv.className="m-mats";
