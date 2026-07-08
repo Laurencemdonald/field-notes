@@ -604,7 +604,7 @@ window.addEventListener("drop", e=>{ if(e.target.closest(".overlay")||e.target.c
 /* ---------- modal ---------- */
 const overlay = document.getElementById("overlay");
 let activeId=null, editing=false;
-function openModal(id){ activeId=id; editing=false; paintModal(); overlay.classList.add("open"); }
+function openModal(id){ activeId=id; editing=false; overlay.classList.remove("cmp"); paintModal(); overlay.classList.add("open"); }
 function closeModal(){ overlay.classList.remove("open"); activeId=null; editing=false; }
 
 function paintModal(){
@@ -653,10 +653,11 @@ function paintModal(){
 }
 function mkBtn(label,cls,fn){ const b=document.createElement("button"); b.className=cls; b.textContent=label; b.addEventListener("click",fn); return b; }
 function placeCursorEnd(el){ el.focus(); const r=document.createRange(); r.selectNodeContents(el); r.collapse(false); const s=window.getSelection(); s.removeAllRanges(); s.addRange(r); }
-overlay.addEventListener("click", e=>{ if(e.target===overlay) closeModal(); });
+overlay.addEventListener("click", e=>{ if(e.target!==overlay) return; if(comparing) closeCompare(); else closeModal(); });
 document.addEventListener("keydown", e=>{
   if(e.key!=="Escape") return;
-  if(overlay.classList.contains("open")) closeModal();
+  if(comparing) closeCompare();
+  else if(overlay.classList.contains("open")) closeModal();
   else if(selecting) exitSelect();
 });
 
