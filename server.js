@@ -205,6 +205,22 @@ function extractJSON(text) {
   throw new Error("no JSON in model response");
 }
 
+// Interpret the CLI's exit. The `claude` CLI reports API/tool failures INSIDE its
+// stdout JSON wrapper (is_error:true, result:"API Error: …"), not on stderr and
+// not always via the exit code — so prefer that real message over the exit code or
+// an unrelated stderr line (e.g. a stdin warning). Returns {ok,text}|{ok:false,error}.
+function parseCliResult(out, err, code) {
+  let wrapper = null;
+  try { wrapper = JSON.parse(out); } catch (e) {}
+  if (wrapper && wrapper.is_error) {
+    return { ok: false, error: String(wrapper.result || "claude analysis failed").slice(0, 200) };
+  }
+  if (code !== 0) {
+    return { ok: false, error: String((wrapper && wrapper.result) || err.trim() || ("claude exited " + code)).slice(0, 200) };
+  }
+  return { ok: true, text: wrapper && wrapper.result != null ? String(wrapper.result) : out };
+}
+
 // Run the local `claude` CLI in headless mode. Uses the user's existing
 // Claude Code login — no API key. Returns the model's text result.
 function runClaudeCLI(imageRelPath) {
@@ -217,7 +233,11 @@ function runClaudeCLI(imageRelPath) {
 
     let child;
     try {
-      child = spawn(CLAUDE_BIN, args, { cwd: ROOT, env: SPAWN_ENV });
+      // stdin = "ignore" (/dev/null): in headless -p mode the prompt comes from
+      // argv, so we send no stdin. Leaving stdin an open pipe makes the CLI wait
+      // ~3s for piped input and print a "no stdin data received" warning on every
+      // call — pure latency and noise. Redirecting it away is the CLI's own advice.
+      child = spawn(CLAUDE_BIN, args, { cwd: ROOT, env: SPAWN_ENV, stdio: ["ignore", "pipe", "pipe"] });
     } catch (e) { return reject(e); }
 
     let out = "", err = "";
@@ -227,11 +247,8 @@ function runClaudeCLI(imageRelPath) {
     child.on("error", e => { clearTimeout(killer); reject(e); }); // ENOENT if CLI missing
     child.on("close", code => {
       clearTimeout(killer);
-      if (code !== 0) return reject(new Error((err.trim() || "claude exited " + code).slice(0, 200)));
-      try {
-        const env = JSON.parse(out);                 // CLI wrapper json
-        resolve(env.result != null ? String(env.result) : out);
-      } catch (e) { resolve(out); }                  // fall back to raw stdout
+      const r = parseCliResult(out, err, code);
+      return r.ok ? resolve(r.text) : reject(new Error(r.error));
     });
   });
 }
