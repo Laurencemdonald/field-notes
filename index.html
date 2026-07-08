@@ -72,6 +72,25 @@
   .btn-line:hover{background:var(--ink);color:var(--bg);}
   .editing .m-name,.editing .m-desc{border-bottom:1px dashed var(--line);}
   .res-note{font-family:var(--sans);font-size:10px;color:var(--gray);letter-spacing:.04em;text-transform:lowercase;}
+  /* compare two references, side by side (read-only) */
+  .compare{display:none;}
+  .overlay.cmp .modal{display:none;}
+  .overlay.cmp .compare{display:block;background:var(--bg);border:1px solid var(--line);max-width:1100px;width:100%;position:relative;}
+  .cmp-close{position:absolute;top:14px;right:16px;font-family:var(--sans);font-size:18px;line-height:1;color:var(--gray);cursor:pointer;z-index:2;user-select:none;}
+  .cmp-close:hover{color:var(--ink);}
+  .cmp-grid{display:grid;grid-template-columns:1fr 1fr;}
+  .cmp-col{padding:30px 28px;display:flex;flex-direction:column;border-right:1px solid var(--line);}
+  .cmp-col:last-child{border-right:none;}
+  .cmp-img{background:#FAFAFA;border:1px solid var(--line);display:flex;align-items:center;justify-content:center;height:320px;}
+  .cmp-img img{max-width:100%;max-height:100%;object-fit:contain;display:block;}
+  .cmp-name{font-family:var(--serif);font-style:italic;font-size:22px;line-height:1.15;color:var(--ink);margin-top:18px;}
+  .cmp-desc{font-family:var(--serif);font-size:15px;line-height:1.5;color:var(--ink-2);margin-top:8px;}
+  .cmp-col .m-row{width:100%;}
+  @media(max-width:760px){
+    .cmp-grid{grid-template-columns:1fr;}
+    .cmp-col{border-right:none;border-bottom:1px solid var(--line);}
+    .cmp-col:last-child{border-bottom:none;}
+  }
 
   .empty-note{font-family:var(--sans);font-size:12px;color:var(--gray);letter-spacing:.03em;text-align:center;padding:8px 0;}
 
@@ -208,6 +227,10 @@
       <div class="m-row"><div class="m-label">materials</div><div class="m-mats" id="mMats"></div></div>
       <div class="m-actions" id="mActions"></div>
     </div>
+  </div>
+  <div class="compare" id="compare">
+    <span class="cmp-close" id="cmpClose" title="close">×</span>
+    <div class="cmp-grid" id="cmpGrid"></div>
   </div>
 </div>
 
