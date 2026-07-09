@@ -616,12 +616,14 @@ const server = http.createServer(async (req, res) => {
         return json(res, 500, { error: isHeic ? "heic conversion failed — is this macOS? (needs sips)" : "could not store image" });
       }
 
-      // 3) produce the downscaled analysis copy (<=1024px JPEG), sent to Claude only
+      // 3) produce the downscaled analysis copy (<=512px JPEG), sent to Claude only.
+      // 512 (vs 1024) roughly quarters the pixel count, so the image costs far fewer
+      // input tokens per analysis — still legible enough to name and tag by.
       const anAbs = path.join(CACHE_DIR, "an_" + id + ".jpg");
       const anRel = path.join(".cache", "an_" + id + ".jpg");
       let analyzeAbs = anAbs, analyzeRel = anRel;
       try {
-        await runSips(["-s", "format", "jpeg", "-Z", "1024", srcAbs, "--out", anAbs]);
+        await runSips(["-s", "format", "jpeg", "-Z", "512", srcAbs, "--out", anAbs]);
       } catch (e) {
         // sips unavailable: fall back to analyzing the stored display file at full size
         analyzeAbs = path.join(LIB_DIR, displayFile);
