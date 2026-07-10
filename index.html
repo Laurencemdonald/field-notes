@@ -335,12 +335,34 @@ function activeCount(){ return filters.category.size+filters.mood.size+filters.m
 function blobToDataURL(blob){
   return new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(r.result); r.onerror=()=>rej(new Error("read failed")); r.readAsDataURL(blob); });
 }
+// Downscale an image (File or data/URL) to a small JPEG data URL via <canvas>, so
+// the analysis copy is made in the browser — no server-side sips, works on any OS.
+// Resolves null if the browser can't decode the image (e.g. HEIC outside Safari).
+function downscaleToJPEG(fileOrURL, max){
+  return new Promise(resolve=>{
+    const isFile = typeof fileOrURL !== "string";
+    const url = isFile ? URL.createObjectURL(fileOrURL) : fileOrURL;
+    const img = new Image();
+    img.onload = ()=>{
+      if(isFile) URL.revokeObjectURL(url);
+      const iw=img.naturalWidth||1, ih=img.naturalHeight||1;
+      const s=Math.min(1, max/Math.max(iw,ih));
+      const c=document.createElement("canvas");
+      c.width=Math.max(1,Math.round(iw*s)); c.height=Math.max(1,Math.round(ih*s));
+      try{ c.getContext("2d").drawImage(img,0,0,c.width,c.height); resolve(c.toDataURL("image/jpeg",0.82)); }
+      catch(e){ resolve(null); }
+    };
+    img.onerror = ()=>{ if(isFile) URL.revokeObjectURL(url); resolve(null); };  // undecodable format
+    img.src = url;
+  });
+}
 
 /* ---------- server calls ---------- */
-// Send the original file to the server, which converts (HEIC→JPEG via sips),
-// downscales a copy for analysis, runs Claude, persists, and returns the record.
-async function apiAdd(id, dataURL, filename){
-  const r = await fetch("/api/add",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({id,dataURL,filename})});
+// Send the original file plus a browser-downscaled analysis copy. The server stores
+// the original, uses the small copy for Claude (falling back to sips only if the
+// browser couldn't make one), runs analysis, persists, and returns the record.
+async function apiAdd(id, dataURL, filename, analysisDataURL){
+  const r = await fetch("/api/add",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({id,dataURL,filename,analysisDataURL})});
   const j = await r.json();
   if(!r.ok) throw new Error(j.error || ("add " + r.status));
   return j;
@@ -665,7 +687,8 @@ async function ingest(files){
       // Safari (macOS) can render HEIC natively, so show it immediately while we work
       item.dataURL = original; refreshCard(id);
       pending[id] = original;
-      const rec = await apiAdd(id, original, file.name);  // convert + downscale + analyze + save
+      const analysisDataURL = await downscaleToJPEG(file, 512);  // null if browser can't decode (HEIC off Safari)
+      const rec = await apiAdd(id, original, file.name, analysisDataURL);  // store + analyze + save
       if(rec && rec.duplicate){                     // already in the library (or a double-drop) — drop this card
         const i = items.indexOf(item); if(i>=0) items.splice(i,1);
         delete pending[id]; render();
@@ -689,7 +712,8 @@ async function retry(id){
   if(!original){ it.error = "reload and re-drop this one"; refreshCard(id); return; }
   it.status="looking"; it.error=""; it.dataURL = original; refreshCard(id);
   try{
-    const rec = await apiAdd(id, original, it.filename || "image.jpg");
+    const analysisDataURL = await downscaleToJPEG(original, 512);
+    const rec = await apiAdd(id, original, it.filename || "image.jpg", analysisDataURL);
     Object.assign(it, rec); it.dataURL=""; delete pending[id]; it.status="ready";
   }catch(err){
     it.status="error"; it.error=friendlyErr(err);

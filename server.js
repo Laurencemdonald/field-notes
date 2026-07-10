@@ -613,21 +613,27 @@ const server = http.createServer(async (req, res) => {
         }
       } catch (e) {
         try { fs.unlinkSync(srcAbs); } catch (_) {}
-        return json(res, 500, { error: isHeic ? "heic conversion failed — is this macOS? (needs sips)" : "could not store image" });
+        return json(res, 500, { error: isHeic ? "HEIC needs macOS to convert — export it to JPEG first, then re-drop" : "could not store image" });
       }
 
-      // 3) produce the downscaled analysis copy (<=512px JPEG), sent to Claude only.
-      // 512 (vs 1024) roughly quarters the pixel count, so the image costs far fewer
-      // input tokens per analysis — still legible enough to name and tag by.
+      // 3) get the downscaled analysis copy (<=512px JPEG), sent to Claude only.
+      // Prefer the copy the browser already downscaled (works on any OS, no sips, and
+      // keeps the token savings everywhere); fall back to sips (macOS), then to the
+      // full-size display file. ~512px costs far fewer input tokens than the original.
       const anAbs = path.join(CACHE_DIR, "an_" + id + ".jpg");
       const anRel = path.join(".cache", "an_" + id + ".jpg");
       let analyzeAbs = anAbs, analyzeRel = anRel;
-      try {
-        await runSips(["-s", "format", "jpeg", "-Z", "512", srcAbs, "--out", anAbs]);
-      } catch (e) {
-        // sips unavailable: fall back to analyzing the stored display file at full size
-        analyzeAbs = path.join(LIB_DIR, displayFile);
-        analyzeRel = path.join("library", displayFile);
+      const clientAnalysis = dataURLToBuffer(it.analysisDataURL);
+      if (clientAnalysis) {
+        fs.writeFileSync(anAbs, clientAnalysis.buf);       // browser did the downscaling
+      } else {
+        try {
+          await runSips(["-s", "format", "jpeg", "-Z", "512", srcAbs, "--out", anAbs]);
+        } catch (e) {
+          // no client copy and no sips: analyze the stored display file at full size
+          analyzeAbs = path.join(LIB_DIR, displayFile);
+          analyzeRel = path.join("library", displayFile);
+        }
       }
 
       // 4) analyze

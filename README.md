@@ -31,8 +31,10 @@ it came from. everything lives on your own disk. no account, no cloud, no upload
 - **tagging** runs through your local **`claude` CLI** (Claude Code) using your
   existing login — there's no API key to manage. each image is analysed in
   headless mode and comes back as a small JSON record (name, palette, materials).
-- **image work** is all server-side via macOS's built-in **`sips`** (HEIC→JPEG,
-  downscaling) and **`mdls`** (EXIF). nothing flaky in the browser, no image libs.
+- **image work**: downscaling happens in the browser (`<canvas>`), so JPEG/PNG/WEBP
+  run on any OS with no image libraries. EXIF/GPS is parsed straight from the file
+  bytes. macOS's built-in **`sips`** is used only for HEIC→JPEG, and **`mdls`** only
+  as an EXIF fallback — so **HEIC still needs macOS** (elsewhere, export to JPEG first).
 - **persistence** is just files: full-res originals in `./library/`, metadata in a
   human-readable `./library.json` you can back up, commit, or hand-edit.
 - **zero dependencies.** the whole thing is one `server.js` (Node's `http`) and one
@@ -57,7 +59,8 @@ tool, opened up so anyone can run their own.
 ## setup
 
 > **before you start, you need:**
-> 1. **macOS** — it uses the built-in `sips` + `mdls` tools (no Windows/Linux yet)
+> 1. **macOS, Windows, or Linux** — JPEG/PNG/WEBP work everywhere; **HEIC needs
+>    macOS** (it uses the built-in `sips` to convert; elsewhere, export to JPEG first)
 > 2. **Node 18 or newer** — check with `node -v` ([install here](https://nodejs.org))
 > 3. **a way to analyse images** — *either* of:
 >    - **[Claude Code](https://claude.com/claude-code)** installed and logged in (easiest, no key), **or**
@@ -109,7 +112,8 @@ CLAUDE_BIN=/full/path/to/claude node ...       # if `claude` isn't auto-found
 - **Node.js** (zero dependencies — just the standard library)
 - **vanilla HTML / CSS / JS** — no framework, no build step
 - **Claude** for image analysis, via the **Claude Code CLI** (or the Anthropic API as a fallback)
-- **macOS `sips` + `mdls`** for image conversion, downscaling, and EXIF
+- **browser `<canvas>`** for downscaling + a byte-level EXIF/GPS parser (cross-platform);
+  macOS **`sips`** only for HEIC→JPEG, **`mdls`** only as an EXIF fallback
 - self-hosted **EB Garamond + Inter** webfonts (works fully offline)
 
 ## project layout
