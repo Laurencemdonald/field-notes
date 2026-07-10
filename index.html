@@ -360,22 +360,21 @@ function render(){
   list = list.filter(it => it.status!=="ready" || matches(it));
   grid.innerHTML = "";
   emptyNote.style.display = items.length ? "none" : "block";
-  if(sortMode==="trips"){ renderTripGroups(list); return; }
+  if(sortMode==="trips"||sortMode==="material"||sortMode==="color"){ renderGroups(list, sortMode); return; }
   grid.classList.remove("grouped");
   list.forEach(it => grid.appendChild(cardEl(it)));
 }
 
-// Aggregate a trip's photo colours into proportional colour-family segments, each
-// coloured by the most common real hex in that family (so the bar shows the trip's
-// actual hues, not generic swatches). Returns [{fam, share, hex}] sorted by share.
-function tripPaletteSegments(list){
+// Aggregate a flat list of hex colours into proportional colour-family segments,
+// each coloured by the most common real hex in that family. [{fam,share,hex}] desc.
+function paletteSegmentsFromColors(colors){
   const famCount={}, hexInFam={};
-  list.forEach(it => (it.colors||[]).forEach(c => {
+  colors.forEach(c => {
     if(typeof c!=="string") return;
     const fam=colorFamily(c);
     famCount[fam]=(famCount[fam]||0)+1;
     (hexInFam[fam]=hexInFam[fam]||{})[c]=(hexInFam[fam][c]||0)+1;
-  }));
+  });
   const total=Object.values(famCount).reduce((a,b)=>a+b,0);
   if(!total) return [];
   return Object.keys(famCount).map(fam => {
@@ -384,8 +383,8 @@ function tripPaletteSegments(list){
     return { fam, share: famCount[fam]/total, hex };
   }).sort((a,b)=>b.share-a.share);
 }
-function tripBar(list){
-  const segs=tripPaletteSegments(list);
+function paletteBar(colors){
+  const segs=paletteSegmentsFromColors(colors);
   if(!segs.length) return null;
   const bar=document.createElement("div"); bar.className="trip-bar";
   segs.forEach(s => {
@@ -397,10 +396,30 @@ function tripBar(list){
   });
   return bar;
 }
-// Render the grid grouped into per-trip sections, each led by its colour-DNA bar.
-function renderTripGroups(list){
+
+// Grouping axes. A "\x00"-prefixed key is the empty bucket (no folder/material),
+// shown last; colour never lands there since every ready photo has colours.
+const GROUP_EMPTY="\x00empty";
+function groupKeys(it, mode){
+  if(mode==="material"){ const m=(it.materials||[]).map(x=>(""+x).toLowerCase().trim()).filter(Boolean); return m.length?[...new Set(m)]:[GROUP_EMPTY]; }
+  if(mode==="color"){ const f=[...new Set((it.colors||[]).map(colorFamily))]; return f.length?f:[GROUP_EMPTY]; }
+  const f=(it.folder||"").trim(); return [f||GROUP_EMPTY];          // trips
+}
+function orderGroups(names, mode){
+  const real=names.filter(n=>n!==GROUP_EMPTY);
+  if(mode==="color") real.sort((a,b)=>FAMILY_ORDER.indexOf(a)-FAMILY_ORDER.indexOf(b));
+  else real.sort((a,b)=>a.localeCompare(b));
+  if(names.includes(GROUP_EMPTY)) real.push(GROUP_EMPTY);
+  return real;
+}
+function groupLabel(key, mode){
+  if(key!==GROUP_EMPTY) return key;
+  return mode==="trips" ? "unsorted" : "untagged";
+}
+// Render the grid grouped by the given axis, each section led by a colour bar.
+function renderGroups(list, mode){
   grid.classList.add("grouped");
-  // in-progress cards can't be grouped (no trip yet) — show them up top so they stay visible
+  // in-progress cards can't be grouped yet — show them up top so they stay visible
   const pending=list.filter(it=>it.status!=="ready");
   if(pending.length){
     const sec=document.createElement("div"); sec.className="trip-cards"; sec.style.marginBottom="52px";
@@ -409,22 +428,25 @@ function renderTripGroups(list){
   }
   const groups={};
   list.filter(it=>it.status==="ready").forEach(it=>{
-    const f=(it.folder||"").trim();
-    (groups[f]=groups[f]||[]).push(it);
+    groupKeys(it, mode).forEach(k => { (groups[k]=groups[k]||[]).push(it); });   // multi-membership
   });
-  const names=Object.keys(groups).filter(n=>n).sort((a,b)=>a.localeCompare(b));
-  if(groups[""]) names.push("");                     // unsorted section last
-  names.forEach(name=>{
-    const grp=groups[name];
+  orderGroups(Object.keys(groups), mode).forEach(key=>{
+    const grp=groups[key];
     const section=document.createElement("div"); section.className="trip-section";
     const head=document.createElement("div"); head.className="trip-head";
     const titleRow=document.createElement("div"); titleRow.className="trip-title-row";
-    const nm=document.createElement("div"); nm.className="trip-name"; nm.textContent=name||"unsorted";
+    const nm=document.createElement("div"); nm.className="trip-name"; nm.textContent=groupLabel(key, mode);
     const meta=document.createElement("div"); meta.className="trip-meta";
-    const range=dateRange(grp);
+    const range=mode==="trips" ? dateRange(grp) : "";                 // date range only reads for trips
     meta.textContent=grp.length+" reference"+(grp.length===1?"":"s")+(range?" · "+range:"");
     titleRow.appendChild(nm); titleRow.appendChild(meta); head.appendChild(titleRow);
-    const bar=tripBar(grp); if(bar) head.appendChild(bar);
+    // colour sections show just that family's hues; trip/material show the whole DNA
+    let colors=[];
+    grp.forEach(it=>(it.colors||[]).forEach(c=>{
+      if(mode==="color" && key!==GROUP_EMPTY){ if(colorFamily(c)===key) colors.push(c); }
+      else colors.push(c);
+    }));
+    const bar=paletteBar(colors); if(bar) head.appendChild(bar);
     section.appendChild(head);
     const cards=document.createElement("div"); cards.className="trip-cards";
     grp.forEach(it=>cards.appendChild(cardEl(it)));
@@ -540,7 +562,7 @@ function renderFilters(){
   const sortRow=document.createElement("div"); sortRow.className="facet";
   const sl=document.createElement("div"); sl.className="facet-label"; sl.textContent="sort";
   const sv=document.createElement("div"); sv.className="facet-values";
-  [["new","newest"],["az","a–z"],["trips","trips"]].forEach(([mode,txt])=>{
+  [["new","newest"],["az","a–z"],["trips","trips"],["material","material"],["color","colour"]].forEach(([mode,txt])=>{
     const el=document.createElement("div"); el.className="fval"+(sortMode===mode?" active":""); el.textContent=txt;
     el.addEventListener("click",()=>{ sortMode=mode; render(); }); sv.appendChild(el);
   });
