@@ -40,6 +40,8 @@
   .trip-title-row{display:flex;align-items:baseline;gap:12px;margin-bottom:12px;}
   .trip-name{font-family:var(--serif);font-style:italic;font-size:21px;color:var(--ink);line-height:1;}
   .trip-meta{font-family:var(--sans);font-size:10.5px;text-transform:lowercase;letter-spacing:.06em;color:var(--gray);}
+  .trip-export{margin-left:auto;font-family:var(--sans);font-size:10.5px;text-transform:lowercase;letter-spacing:.04em;color:var(--gray);cursor:pointer;text-decoration:underline;text-underline-offset:2px;}
+  .trip-export:hover{color:var(--ink);}
   .trip-bar{display:flex;height:16px;width:100%;border:1px solid var(--line);overflow:hidden;}
   .trip-bar span{display:block;min-width:4px;}
   .trip-cards{display:grid;grid-template-columns:repeat(3,1fr);gap:30px;}
@@ -439,7 +441,14 @@ function renderGroups(list, mode){
     const meta=document.createElement("div"); meta.className="trip-meta";
     const range=mode==="trips" ? dateRange(grp) : "";                 // date range only reads for trips
     meta.textContent=grp.length+" reference"+(grp.length===1?"":"s")+(range?" · "+range:"");
-    titleRow.appendChild(nm); titleRow.appendChild(meta); head.appendChild(titleRow);
+    titleRow.appendChild(nm); titleRow.appendChild(meta);
+    if(mode==="trips" && key!==GROUP_EMPTY){        // export this trip as a self-contained page
+      const exp=document.createElement("span"); exp.className="trip-export"; exp.textContent="export ↓";
+      exp.title="download this trip as a shareable page";
+      exp.addEventListener("click", async ()=>{ exp.textContent="exporting…"; try{ await exportTrip(key, grp); } finally{ exp.textContent="export ↓"; } });
+      titleRow.appendChild(exp);
+    }
+    head.appendChild(titleRow);
     // colour sections show just that family's hues; trip/material show the whole DNA
     let colors=[];
     grp.forEach(it=>(it.colors||[]).forEach(c=>{
@@ -1013,7 +1022,8 @@ function coverBlock(title, list){
 }
 
 /* ---- format 1: editorial pages (one per page) ---- */
-function buildPagesZine(list, title, paper){
+function buildPagesZine(list, title, paper, srcOf){
+  srcOf = srcOf || imgURL;                    // swappable so a self-contained export can inline images
   const pg=PAPER[paper]||PAPER.a4;
   const css=
     '@page{size:'+pg.css+';margin:0;}'+
@@ -1029,11 +1039,35 @@ function buildPagesZine(list, title, paper){
     '@media screen{body{background:#8c8c8c;}.book{padding:64px 0 40px;}.page{margin:0 auto 28px;box-shadow:0 4px 28px rgba(0,0,0,.28);}}'+
     '@media print{.bar{display:none;}.page{margin:0;box-shadow:none;}}';
   const cover='<section class="page cover">'+coverBlock(title,list)+'</section>';
-  const pages=list.map(it=>'<section class="page ref"><div class="ref-img"><img src="'+imgURL(it)+'" alt=""></div>'+
+  const pages=list.map(it=>'<section class="page ref"><div class="ref-img"><img src="'+srcOf(it)+'" alt=""></div>'+
     '<div class="ref-meta"><div class="zname">'+esc(it.name)+'</div>'+
     (it.description?'<div class="zdesc">'+esc(it.description)+'</div>':'')+metaRows(it)+'</div></section>').join("");
   return doc(title, css, bar(list.length+' page'+(list.length===1?'':'s')+' + cover · choose “Save as PDF” in the dialog')+
     '<main class="book">'+cover+pages+'</main>');
+}
+
+/* ---- export a whole trip as one self-contained, shareable page ---- */
+// Inline each image as a data URI so the exported file works offline / when emailed,
+// then reuse the editorial pages layout with those inlined sources.
+async function buildTripHTML(title, list){
+  const srcMap={};
+  await Promise.all(list.map(async it=>{
+    try{ srcMap[it.id]=await blobToDataURL(await (await fetch(imgSrc(it,1400))).blob()); }
+    catch(e){ srcMap[it.id]=imgURL(it); }               // fall back to the live URL on any failure
+  }));
+  return buildPagesZine(list, title, "letter", it => srcMap[it.id] || imgURL(it));
+}
+function downloadHTML(filename, html){
+  const a=document.createElement("a");
+  a.href=URL.createObjectURL(new Blob([html], {type:"text/html"}));
+  a.download=filename; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(a.href), 4000);
+}
+async function exportTrip(name, list){
+  const title=name||"Field Notes";
+  const ordered=list.slice().sort((a,b)=>(a.date||"9999").localeCompare(b.date||"9999"));  // chronological
+  const html=await buildTripHTML(title, ordered);
+  downloadHTML((title.replace(/[^\w\- ]+/g,"").trim().replace(/\s+/g,"_")||"trip")+".html", html);
 }
 
 /* ---- format 2: one-sheet mini-zine (fold + 1 cut, PocketMod imposition) ---- */
