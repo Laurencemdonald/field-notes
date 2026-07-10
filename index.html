@@ -32,6 +32,17 @@
   .dropzone .dz-rule{width:64px;height:1px;background:var(--line);margin:18px auto 0;}
 
   .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:30px;}
+
+  /* group-by-trip view: each trip is a section with a dominant-colour bar header */
+  .grid.grouped{display:block;}
+  .trip-section{margin-bottom:52px;}
+  .trip-head{margin-bottom:22px;padding-bottom:14px;border-bottom:1px solid var(--line);}
+  .trip-title-row{display:flex;align-items:baseline;gap:12px;margin-bottom:12px;}
+  .trip-name{font-family:var(--serif);font-style:italic;font-size:21px;color:var(--ink);line-height:1;}
+  .trip-meta{font-family:var(--sans);font-size:10.5px;text-transform:lowercase;letter-spacing:.06em;color:var(--gray);}
+  .trip-bar{display:flex;height:16px;width:100%;border:1px solid var(--line);overflow:hidden;}
+  .trip-bar span{display:block;min-width:4px;}
+  .trip-cards{display:grid;grid-template-columns:repeat(3,1fr);gap:30px;}
   .card{border:1px solid var(--line);background:var(--bg);cursor:pointer;display:flex;flex-direction:column;overflow:hidden;animation:fadein .5s ease both;}
   @keyframes fadein{from{opacity:0;}to{opacity:1;}}
   .card .thumb{width:100%;aspect-ratio:4/3;background:#FAFAFA;overflow:hidden;display:block;}
@@ -345,17 +356,81 @@ function render(){
   renderFilters();
   let list = items.slice();
   if(sortMode==="az") list.sort((a,b)=>(a.name||"~").localeCompare(b.name||"~"));
-  else if(sortMode==="loc") list.sort((a,b)=>{
-    const fa=(a.folder||"").trim().toLowerCase(), fb=(b.folder||"").trim().toLowerCase();
-    if(!fa!==!fb) return fa?-1:1;                  // images with no trip sink to the bottom
-    if(fa!==fb) return fa.localeCompare(fb);        // group by location, A→Z
-    return (a.date||"").localeCompare(b.date||""); // within a location, oldest → newest
-  });
   // in-progress cards (looking/error) always show; only ready cards obey filters
   list = list.filter(it => it.status!=="ready" || matches(it));
   grid.innerHTML = "";
   emptyNote.style.display = items.length ? "none" : "block";
+  if(sortMode==="trips"){ renderTripGroups(list); return; }
+  grid.classList.remove("grouped");
   list.forEach(it => grid.appendChild(cardEl(it)));
+}
+
+// Aggregate a trip's photo colours into proportional colour-family segments, each
+// coloured by the most common real hex in that family (so the bar shows the trip's
+// actual hues, not generic swatches). Returns [{fam, share, hex}] sorted by share.
+function tripPaletteSegments(list){
+  const famCount={}, hexInFam={};
+  list.forEach(it => (it.colors||[]).forEach(c => {
+    if(typeof c!=="string") return;
+    const fam=colorFamily(c);
+    famCount[fam]=(famCount[fam]||0)+1;
+    (hexInFam[fam]=hexInFam[fam]||{})[c]=(hexInFam[fam][c]||0)+1;
+  }));
+  const total=Object.values(famCount).reduce((a,b)=>a+b,0);
+  if(!total) return [];
+  return Object.keys(famCount).map(fam => {
+    const hexes=hexInFam[fam];
+    const hex=Object.keys(hexes).sort((a,b)=>hexes[b]-hexes[a])[0]; // most common hex in family
+    return { fam, share: famCount[fam]/total, hex };
+  }).sort((a,b)=>b.share-a.share);
+}
+function tripBar(list){
+  const segs=tripPaletteSegments(list);
+  if(!segs.length) return null;
+  const bar=document.createElement("div"); bar.className="trip-bar";
+  segs.forEach(s => {
+    const seg=document.createElement("span");
+    seg.style.flexGrow=String(Math.max(s.share,0.01));
+    seg.style.background=s.hex;
+    seg.title=s.fam+" · "+Math.round(s.share*100)+"%";
+    bar.appendChild(seg);
+  });
+  return bar;
+}
+// Render the grid grouped into per-trip sections, each led by its colour-DNA bar.
+function renderTripGroups(list){
+  grid.classList.add("grouped");
+  // in-progress cards can't be grouped (no trip yet) — show them up top so they stay visible
+  const pending=list.filter(it=>it.status!=="ready");
+  if(pending.length){
+    const sec=document.createElement("div"); sec.className="trip-cards"; sec.style.marginBottom="52px";
+    pending.forEach(it=>sec.appendChild(cardEl(it)));
+    grid.appendChild(sec);
+  }
+  const groups={};
+  list.filter(it=>it.status==="ready").forEach(it=>{
+    const f=(it.folder||"").trim();
+    (groups[f]=groups[f]||[]).push(it);
+  });
+  const names=Object.keys(groups).filter(n=>n).sort((a,b)=>a.localeCompare(b));
+  if(groups[""]) names.push("");                     // unsorted section last
+  names.forEach(name=>{
+    const grp=groups[name];
+    const section=document.createElement("div"); section.className="trip-section";
+    const head=document.createElement("div"); head.className="trip-head";
+    const titleRow=document.createElement("div"); titleRow.className="trip-title-row";
+    const nm=document.createElement("div"); nm.className="trip-name"; nm.textContent=name||"unsorted";
+    const meta=document.createElement("div"); meta.className="trip-meta";
+    const range=dateRange(grp);
+    meta.textContent=grp.length+" reference"+(grp.length===1?"":"s")+(range?" · "+range:"");
+    titleRow.appendChild(nm); titleRow.appendChild(meta); head.appendChild(titleRow);
+    const bar=tripBar(grp); if(bar) head.appendChild(bar);
+    section.appendChild(head);
+    const cards=document.createElement("div"); cards.className="trip-cards";
+    grp.forEach(it=>cards.appendChild(cardEl(it)));
+    section.appendChild(cards);
+    grid.appendChild(section);
+  });
 }
 
 function clearDropTargets(){ document.querySelectorAll(".fold.drop-target").forEach(f=>f.classList.remove("drop-target")); }
@@ -465,7 +540,7 @@ function renderFilters(){
   const sortRow=document.createElement("div"); sortRow.className="facet";
   const sl=document.createElement("div"); sl.className="facet-label"; sl.textContent="sort";
   const sv=document.createElement("div"); sv.className="facet-values";
-  [["new","newest"],["az","a–z"],["loc","location"]].forEach(([mode,txt])=>{
+  [["new","newest"],["az","a–z"],["trips","trips"]].forEach(([mode,txt])=>{
     const el=document.createElement("div"); el.className="fval"+(sortMode===mode?" active":""); el.textContent=txt;
     el.addEventListener("click",()=>{ sortMode=mode; render(); }); sv.appendChild(el);
   });
