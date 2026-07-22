@@ -1,0 +1,67 @@
+name: Deploy to homelab
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read deploy.json
+        id: cfg
+        run: |
+          for k in domain type output root db seed; do
+            echo "$k=$(jq -r --arg k "$k" '.[$k] // ""' deploy.json)" >> "$GITHUB_OUTPUT"
+          done
+
+      - name: Setup Node
+        if: steps.cfg.outputs.type == 'vite' || steps.cfg.outputs.type == 'next'
+        uses: actions/setup-node@v4
+        with: { node-version: '20' }
+      - name: Build
+        if: steps.cfg.outputs.type == 'vite' || steps.cfg.outputs.type == 'next'
+        run: npm ci && npm run build
+
+      - name: Connect Tailscale
+        uses: tailscale/github-action@v2
+        with:
+          authkey: ${{ secrets.TS_AUTHKEY }}
+
+      - name: SSH key
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s' "${{ secrets.CI_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 100.105.12.33 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Deploy
+        env:
+          SRV: server-admin@100.105.12.33
+          DOMAIN: ${{ steps.cfg.outputs.domain }}
+          TYPE: ${{ steps.cfg.outputs.type }}
+          DB: ${{ steps.cfg.outputs.db }}
+          SEED: ${{ steps.cfg.outputs.seed }}
+        run: |
+          OUT="${{ steps.cfg.outputs.output }}"; [ -n "$OUT" ] || OUT=dist
+          ROOT="${{ steps.cfg.outputs.root }}"; [ -n "$ROOT" ] || ROOT=.
+          case "$TYPE" in
+            static)
+              rsync -az --delete --exclude='.git' --exclude='deploy.json' --exclude='.github' \
+                "./$ROOT/" "$SRV:/srv/www/$DOMAIN/" ;;
+            vite|next)
+              rsync -az --delete "./$OUT/" "$SRV:/srv/www/$DOMAIN/" ;;
+            laravel)
+              rsync -az --delete --exclude='.git' --exclude='node_modules' --exclude='vendor' \
+                --exclude='.env' --exclude='bootstrap/cache/*.php' --exclude='.github' \
+                ./ "$SRV:/srv/laravel/$DOMAIN/"
+              ssh "$SRV" "bash /srv/stack/deploy-laravel.sh '$DOMAIN' '$DB' '$SEED'" ;;
+            *) echo "neznámy type: $TYPE"; exit 1 ;;
+          esac
+          echo "✅ $DOMAIN nasadené"
