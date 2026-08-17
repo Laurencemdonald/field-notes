@@ -619,7 +619,9 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, () => {
+// Bind to loopback only: the app's whole promise is that nothing leaves this
+// machine, so don't listen on the network at all.
+server.listen(PORT, "127.0.0.1", () => {
   console.log("\n  Field Notes  →  http://localhost:" + PORT);
   console.log("  library: " + LIB_JSON);
   if (CLAUDE_FOUND) {

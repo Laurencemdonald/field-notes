@@ -40,8 +40,6 @@ it came from. everything lives on your own disk. no account, no cloud, no upload
 
 ## why i built it
 
-<!-- draft in your voice — rewrite this until it sounds like you -->
-
 i come back from every trip with a camera roll full of the same kinds of things:
 a wall, a doorway, a stack of tiles, the exact orange of a café sign. references.
 the problem was never taking them — it was everything after. they'd sit in my phone,
@@ -68,7 +66,7 @@ tool, opened up so anyone can run their own.
 
 ```bash
 # 1. clone
-git clone https://github.com/YOUR_USERNAME/field-notes.git
+git clone https://github.com/Laurencemdonald/field-notes.git
 cd field-notes
 
 # 2. dependencies — there are none to install (zero-dependency Node app)
@@ -126,8 +124,6 @@ field-notes/
 ```
 
 ## what i'd do next
-
-<!-- draft — swap in your own ideas -->
 
 a running list, roughly in order of how much i want them:
 

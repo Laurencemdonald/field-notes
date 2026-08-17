@@ -33,3 +33,6 @@ Icon?
 
 # ── logs ─────────────────────────────────────────────────────────────────────
 *.log
+
+# ── social/press assets (kept local, not part of the app) ────────────────────
+docs/carousel/
