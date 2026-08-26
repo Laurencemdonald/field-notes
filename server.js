@@ -12,6 +12,7 @@
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
+const os = require("os");
 const { spawn } = require("child_process");
 const crypto = require("crypto");
 
@@ -49,28 +50,47 @@ const LIB_JSON = path.join(ROOT, "library.json");
 const API_KEY = process.env.ANTHROPIC_API_KEY || "";          // optional fallback
 const MODEL = process.env.FIELD_NOTES_MODEL || "";            // optional override
 
-// Resolve the `claude` CLI to an absolute path. When macOS auto-starts this
-// server at login (launchd), PATH is bare and a plain "claude" can't be found —
-// so we search the usual install spots and fall back to a richer PATH at spawn.
-const EXTRA_PATH = [
-  path.join(process.env.HOME || "", ".local/bin"),
-  "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin",
-].join(":");
+// Resolve the `claude` CLI to an absolute path. When the server is auto-started
+// at login (launchd on macOS, Task Scheduler on Windows), PATH is bare and a
+// plain "claude" can't be found — so we search the usual install spots and fall
+// back to a richer PATH at spawn.
+const _isWindows = process.platform === "win32";
+const _homeDir = os.homedir();
+const _claudeNames = _isWindows ? ["claude.cmd", "claude.exe", "claude"] : ["claude"];
+const _claudeFallback = _isWindows ? "claude.cmd" : "claude";
+const EXTRA_PATH = (_isWindows
+  ? [
+      path.join(_homeDir, "AppData", "Roaming", "npm"),
+      path.join(_homeDir, "AppData", "Local", "Programs", "Claude"),
+      path.join(_homeDir, ".local", "bin"),
+    ]
+  : [
+      path.join(_homeDir, ".local", "bin"),
+      "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin",
+    ]
+).join(path.delimiter);
 const SPAWN_ENV = Object.assign({}, process.env, {
-  PATH: (process.env.PATH || "") + ":" + EXTRA_PATH,
+  PATH: (process.env.PATH || "") + path.delimiter + EXTRA_PATH,
 });
 const CLAUDE_BIN = (() => {
   if (process.env.CLAUDE_BIN) return process.env.CLAUDE_BIN;
-  const dirs = ((process.env.PATH || "") + ":" + EXTRA_PATH).split(":").filter(Boolean);
+  const accessFlag = _isWindows ? fs.constants.F_OK : fs.constants.X_OK;
+  const dirs = ((process.env.PATH || "") + path.delimiter + EXTRA_PATH)
+    .split(path.delimiter).filter(Boolean);
   for (const dir of dirs) {
-    const p = path.join(dir, "claude");
-    try { fs.accessSync(p, fs.constants.X_OK); return p; } catch (e) {}
+    for (const name of _claudeNames) {
+      const p = path.join(dir, name);
+      try { fs.accessSync(p, accessFlag); return p; } catch (e) {}
+    }
   }
-  return "claude";                                           // last resort: rely on PATH at spawn
+  return _claudeFallback;                                    // last resort: rely on PATH at spawn
 })();
 // True when we found a real `claude` binary (absolute path). When false AND no API
 // key is set, image analysis can't run — we say so loudly at startup.
-const CLAUDE_FOUND = CLAUDE_BIN !== "claude";
+const CLAUDE_FOUND = CLAUDE_BIN !== _claudeFallback;
+// True when the resolved binary is a Windows batch script (.cmd/.bat).
+// Node/libuv cannot exec batch scripts directly — they need cmd.exe as host.
+const _useShell = _isWindows && /\.(cmd|bat)$/i.test(CLAUDE_BIN);
 
 if (!fs.existsSync(LIB_DIR)) fs.mkdirSync(LIB_DIR, { recursive: true });
 if (!fs.existsSync(CACHE_DIR)) fs.mkdirSync(CACHE_DIR, { recursive: true });
@@ -160,6 +180,27 @@ function normalize(p) {
   };
 }
 
+/* ---------------- spawn helper ---------------- */
+// Wraps Node's spawn() so that .cmd/.bat files work on Windows.
+// libuv cannot exec batch scripts directly; we route them through cmd.exe.
+// Each argument is quoted with the cmd.exe convention (surround with "...",
+// escape inner " as "") and the whole command string is passed verbatim to
+// CreateProcess (windowsVerbatimArguments) so Node doesn't add a second
+// escaping layer on top of ours.
+function spawnCLI(args, opts) {
+  if (!_useShell) return spawn(CLAUDE_BIN, args, opts);
+  // cmd.exe treats \n as a command terminator even inside double-quoted strings,
+  // so newlines must be removed before the argument reaches the shell.
+  const escArg = a => '"' + a.replace(/\r?\n|\r/g, ' ').replace(/"/g, '""') + '"';
+  const cmdStr = [CLAUDE_BIN, ...args].map(escArg).join(' ');
+  // /s strips exactly the first and last " of the string after /c.
+  // Wrapping cmdStr in an extra outer "..." gives /s those to consume,
+  // leaving the per-argument quotes intact — the standard cross-spawn pattern.
+  return spawn(process.env.ComSpec || 'cmd.exe',
+    ['/d', '/s', '/c', '"' + cmdStr + '"'],
+    { ...opts, windowsVerbatimArguments: true });
+}
+
 /* ---------------- analysis ---------------- */
 // Pull the first {...} JSON object out of arbitrary text.
 function extractJSON(text) {
@@ -175,18 +216,24 @@ function extractJSON(text) {
 
 // Run the local `claude` CLI in headless mode. Uses the user's existing
 // Claude Code login — no API key. Returns the model's text result.
+// The prompt is written to stdin instead of passed as a -p argument so that
+// newlines, quotes, and braces in the JSON example never touch the shell's
+// command-line parser (critical on Windows where cmd.exe re-interprets them).
 function runClaudeCLI(imageRelPath) {
   return new Promise((resolve, reject) => {
     const prompt =
       "Read the image file at " + imageRelPath + ".\n\n" +
       SYSTEM_PROMPT + "\n\nReturn ONLY the JSON object and nothing else.";
-    const args = ["-p", prompt, "--output-format", "json", "--allowedTools", "Read"];
+    const args = ["-p", "--output-format", "json", "--allowedTools", "Read"];
     if (MODEL) args.push("--model", MODEL);
 
     let child;
     try {
-      child = spawn(CLAUDE_BIN, args, { cwd: ROOT, env: SPAWN_ENV });
+      child = spawnCLI(args, { cwd: ROOT, env: SPAWN_ENV, stdio: ["pipe", "pipe", "pipe"] });
     } catch (e) { return reject(e); }
+
+    child.stdin.write(prompt, "utf8");
+    child.stdin.end();
 
     let out = "", err = "";
     const killer = setTimeout(() => { child.kill("SIGKILL"); reject(new Error("claude cli timed out")); }, 180000);
@@ -538,6 +585,7 @@ const server = http.createServer(async (req, res) => {
           fs.copyFileSync(srcAbs, path.join(LIB_DIR, displayFile));
         }
       } catch (e) {
+        console.error("[upload] display-file step failed:", e);
         try { fs.unlinkSync(srcAbs); } catch (_) {}
         return json(res, 500, { error: isHeic ? "heic conversion failed — is this macOS? (needs sips)" : "could not store image" });
       }
@@ -559,6 +607,7 @@ const server = http.createServer(async (req, res) => {
       try {
         meta = await analyzeFile(analyzeAbs, analyzeRel);
       } catch (err) {
+        console.error("[upload] analyzeFile failed:", err);
         try { fs.unlinkSync(srcAbs); } catch (_) {}
         try { fs.unlinkSync(anAbs); } catch (_) {}
         try { fs.unlinkSync(path.join(LIB_DIR, displayFile)); } catch (_) {}
