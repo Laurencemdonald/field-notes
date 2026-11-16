@@ -336,7 +336,7 @@ async function runAPIFromFile(absJpegPath) {
     method: "POST",
     headers: { "content-type": "application/json", "x-api-key": API_KEY, "anthropic-version": "2023-06-01" },
     body: JSON.stringify({
-      model: MODEL || "claude-sonnet-4-5",
+      model: MODEL || "claude-sonnet-5-5",
       max_tokens: 1000,
       system: SYSTEM_PROMPT,
       messages: [{ role: "user", content: [
